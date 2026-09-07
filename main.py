@@ -10,7 +10,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 import openai
 import replicate
 
-# "8665857884:AAHi6b9NZWqZhM_gUmiRJwcCxzak3TewEls"
+# --- ключи ---
 BOT_TOKEN = "8665857884:AAHi6b9NZWqZhM_gUmiRJwcCxzak3TewEls"
 OPENAI_API_KEY = "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"
 REPLICATE_API_TOKEN = "r8_cDVzEaXQy7tlWRvS7RJIZZr7edkHMMG457NkK"
