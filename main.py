@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+from aiohttp import web
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
@@ -9,12 +10,11 @@ from aiogram.fsm.storage.memory import MemoryStorage
 import openai
 import replicate
 
-# "8665857884:AAHi6b9NZWqZhM_gUmiRJwcCxzak3TewEls"
+# ---"8665857884:AAHi6b9NZWqZhM_gUmiRJwcCxzak3TewEls"
 BOT_TOKEN = "ТВОЙ_TELEGRAM_BOT_TOKEN"
 OPENAI_API_KEY = "ТВОЙ_OPENAI_API_KEY"
 REPLICATE_API_TOKEN = "ТВОЙ_REPLICATE_API_TOKEN"
 
-# Инициализация
 os.environ["REPLICATE_API_TOKEN"] = REPLICATE_API_TOKEN
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
@@ -90,9 +90,24 @@ async def generate_image(face_image_url: str, prompt: str):
         print(f"Ошибка картинки: {e}")
         return None
 
+# Фейковый веб-сервер для Render Web Service
+async def handle_health_check(request):
+    return web.Response(text="Bot is running!")
+
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get('/', handle_health_check)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.environ.get("PORT", 10000))
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+
 async def main():
     logging.basicConfig(level=logging.INFO)
+    await start_web_server()
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
+
