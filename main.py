@@ -10,7 +10,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 import openai
 import replicate
 
-# ---"8665857884:AAHi6b9NZWqZhM_gUmiRJwcCxzak3TewEls"
+# "8665857884:AAHi6b9NZWqZhM_gUmiRJwcCxzak3TewEls"
 BOT_TOKEN = "ТВОЙ_TELEGRAM_BOT_TOKEN"
 OPENAI_API_KEY = "ТВОЙ_OPENAI_API_KEY"
 REPLICATE_API_TOKEN = "ТВОЙ_REPLICATE_API_TOKEN"
