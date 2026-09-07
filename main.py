@@ -57,21 +57,22 @@ async def process_photo(message: types.Message, state: FSMContext):
     await state.clear()
 
 async def generate_story(name: str):
-    client = openai.AsyncOpenAI(api_key=OPENAI_API_KEY)
-    prompt = f"""
-    Напиши короткую добрую сказку (до 700 символов) про ребенка по имени {name}.
-    В конце отдельной строкой напиши: PROMPT: <описание главного героя и сцены на английском языка для картинки в стиле Pixar, например: a cute child {name} in a wizard hat in a fairytale forest, pixar 3d style>
-    """
-    response = await client.chat.completions.create(
-        model="gpt-4o",
-        messages=[{"role": "user", "content": prompt}]
-    )
-    full_text = response.choices[0].message.content
-    
-    if "PROMPT:" in full_text:
-        story, img_prompt = full_text.split("PROMPT:")
-        return story.strip(), img_prompt.strip()
-    return full_text, f"A cute child named {name} in a magical forest, pixar style"
+    try:
+        client = openai.AsyncOpenAI(api_key=OPENAI_API_KEY)
+        prompt = f"Напиши короткую добрую сказку (до 500 символов) про ребенка по имени {name}."
+        response = await client.chat.completions.create(
+            model="gpt-4o-mini",  # Более дешевая и быстрая модель
+            messages=[{"role": "user", "content": prompt}]
+        )
+        story = response.choices[0].message.content
+        img_prompt = f"a cute boy named {name} in a magical forest, pixar 3d style"
+        return story, img_prompt
+    except Exception as e:
+        print(f"Ошибка OpenAI: {e}")
+        # Запасная сказка, если API не сработает
+        fallback_story = f"Жил-был отважный мальчик {name}. Однажды он отправился в волшебный лес и нашел там сундук с исполнениями желаний!"
+        return fallback_story, f"a cute boy named {name} in a magical forest, pixar 3d style"
+
 
 async def generate_image(face_image_url: str, prompt: str):
     try:
