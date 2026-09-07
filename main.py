@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import json
 from aiohttp import web
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import CommandStart
@@ -10,7 +11,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 import openai
 import replicate
 
-# --- ключи ---
+# --- КЛЮЧИ ---
 BOT_TOKEN = "8665857884:AAHi6b9NZWqZhM_gUmiRJwcCxzak3TewEls"
 OPENAI_API_KEY = "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"
 REPLICATE_API_TOKEN = "r8_cDVzEaXQy7tlWRvS7RJIZZr7edkHMMG457NkK"
@@ -19,60 +20,94 @@ os.environ["REPLICATE_API_TOKEN"] = REPLICATE_API_TOKEN
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
+# Состояния диалога
 class StoryForm(StatesGroup):
     waiting_for_name = State()
+    waiting_for_theme = State()
     waiting_for_photo = State()
 
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message, state: FSMContext):
-    await message.answer("Привет! Я создаю персональные сказки. Как зовут ребенка?")
+    await message.answer("Привет! Я создаю персональные иллюстрированные книги для детей.\n\nКак зовут главного героя книги?")
     await state.set_state(StoryForm.waiting_for_name)
 
 @dp.message(StoryForm.waiting_for_name)
 async def process_name(message: types.Message, state: FSMContext):
     await state.update_data(child_name=message.text)
-    await message.answer(f"Приятно познакомиться, {message.text}! Отправь мне фото ребенка (желательно, чтобы лицо было четко видно).")
+    await message.answer(f"Замечательно! О чем будет сказка про {message.text}?\n\nНапишите сюжет (например: 'Путешествие в космос на динозавре', 'Спасение подводного города', 'Школа магии').")
+    await state.set_state(StoryForm.waiting_for_theme)
+
+@dp.message(StoryForm.waiting_for_theme)
+async def process_theme(message: types.Message, state: FSMContext):
+    await state.update_data(story_theme=message.text)
+    await message.answer("Отлично! Теперь отправьте четкое фото ребенка — я использую его для создания иллюстраций к каждой странице.")
     await state.set_state(StoryForm.waiting_for_photo)
 
 @dp.message(StoryForm.waiting_for_photo, F.photo)
 async def process_photo(message: types.Message, state: FSMContext):
     data = await state.get_data()
     child_name = data['child_name']
+    story_theme = data['story_theme']
     
-    await message.answer("Придумываю сказку и рисую иллюстрацию... Занимает около 30–40 секунд.")
+    await message.answer(" Пишу большую книгу на 10 страниц и генерирую иллюстрации... Это займет около 2–3 минут.")
 
     photo = message.photo[-1]
     file_info = await bot.get_file(photo.file_id)
     photo_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_info.file_path}"
 
-    story_text, image_prompt = await generate_story(child_name)
-    image_result_url = await generate_image(photo_url, image_prompt)
+    # Генерация книги (10 страниц)
+    pages = await generate_full_book(child_name, story_theme)
 
-    if image_result_url:
-        await message.answer_photo(photo=image_result_url, caption=story_text)
-    else:
-        await message.answer(story_text)
-        await message.answer("Не удалось сгенерировать картинку, но вот ваша сказка!")
+    for idx, page in enumerate(pages, 1):
+        story_text = page.get("text", "")
+        img_prompt = page.get("prompt", "")
 
+        # Генерация уникальной картинки для каждой страницы
+        image_url = await generate_image(photo_url, img_prompt)
+
+        header = f" Страница {idx}/10\n\n{story_text}"
+        
+        if image_url:
+            await message.answer_photo(photo=image_url, caption=header)
+        else:
+            await message.answer(header)
+        
+        await asyncio.sleep(1)  # Пауза между отправкой страниц
+
+    await message.answer(" Конец сказки! Надеюсь, малышу понравилась книга.")
     await state.clear()
 
-async def generate_story(name: str):
+async def generate_full_book(name: str, theme: str):
     try:
         client = openai.AsyncOpenAI(api_key=OPENAI_API_KEY)
-        prompt = f"Напиши короткую добрую сказку (до 500 символов) про ребенка по имени {name}."
+        prompt = f"""
+        Создай детскую сказку из 10 страниц про ребенка по имени {name}.
+        Сюжет сказки: {theme}.
+        
+        Ответь СТРОГО в формате JSON-массива из 10 объектов без лишнего текста.
+        Каждый объект должен содержать:
+        - "text": текст страницы (2-4 предложения, добрые, интересные).
+        - "prompt": подробное описание сцены на английском языке в стиле 3D Pixar для создания картинки, например: "A 3D Pixar style illustration of a cute child {name} space suit, flying on a blue dinosaur in outer space, high detail".
+        
+        Пример структуры:
+        [
+          {{"text": "Страница 1...", "prompt": "a cute child..."}},
+          ...
+        ]
+        """
         response = await client.chat.completions.create(
-            model="gpt-4o-mini",  # Более дешевая и быстрая модель
-            messages=[{"role": "user", "content": prompt}]
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"}
         )
-        story = response.choices[0].message.content
-        img_prompt = f"a cute boy named {name} in a magical forest, pixar 3d style"
-        return story, img_prompt
+        content = response.choices[0].message.content
+        data = json.loads(content)
+        return data.get("pages", data.get("book", list(data.values())[0]))
     except Exception as e:
-        print(f"Ошибка OpenAI: {e}")
-        # Запасная сказка, если API не сработает
-        fallback_story = f"Жил-был отважный мальчик {name}. Однажды он отправился в волшебный лес и нашел там сундук с исполнениями желаний!"
-        return fallback_story, f"a cute boy named {name} in a magical forest, pixar 3d style"
-
+        print(f"Ошибка книги OpenAI: {e}")
+        # Резервные 10 страниц, если упал OpenAI API
+        return [{"text": f"Страница {i}: {name} продолжал свое удивительное приключение по сюжету '{theme}'!", 
+                 "prompt": f"a cute child named {name} in a fairytale adventure, page {i}, pixar style"} for i in range(1, 11)]
 
 async def generate_image(face_image_url: str, prompt: str):
     try:
@@ -88,12 +123,12 @@ async def generate_image(face_image_url: str, prompt: str):
         )
         return output[0] if isinstance(output, list) else output
     except Exception as e:
-        print(f"Ошибка картинки: {e}")
+        print(f"Ошибка Replicate: {e}")
         return None
 
-# Фейковый веб-сервер для Render Web Service
+# Фейковый веб-сервер для Render
 async def handle_health_check(request):
-    return web.Response(text="Bot is running!")
+    return web.Response(text="Book Bot is running!")
 
 async def start_web_server():
     app = web.Application()
@@ -111,4 +146,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
