@@ -22,15 +22,19 @@ from reportlab.lib.units import cm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 
-# Регистрируем шрифт DejaVuSans для поддержки русского языка
-pdfmetrics.registerFont(TTFont('DejaVu', 'DejaVuSans.ttf'))
+# Используем стандартный встроенный шрифт с поддержкой unicode/кириллицы в ReportLab
+try:
+    pdfmetrics.registerFont(TTFont('DejaVu', 'DejaVuSans.ttf'))
+    PDF_FONT = 'DejaVu'
+except Exception:
+    PDF_FONT = 'Helvetica'
 
 # --- КЛЮЧИ ---
 BOT_TOKEN = "8665857884:AAHi6b9NZWqZhM_gUmiRJwcCxzak3TewEls"
 OPENAI_API_KEY = "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"
 REPLICATE_API_TOKEN = "r8_cDVzEaXQy7tlWRvS7RJIZZr7edkHMMG457NkK"
 
-RENDER_URL = "https://story-bot-34cj.onrender.com"  # Проверьте ваш URL на Render
+RENDER_URL = "https://story-bot-34cj.onrender.com"  # Ваш URL на Render
 
 os.environ["REPLICATE_API_TOKEN"] = REPLICATE_API_TOKEN
 bot = Bot(token=BOT_TOKEN)
@@ -88,7 +92,7 @@ async def process_photo(message: types.Message, state: FSMContext):
 
     pages, error_msg = await generate_full_book(child_name, story_theme)
     if error_msg:
-        await message.answer(f" Ошибка генерации текста OpenAI:\n`{error_msg}`", parse_mode="Markdown")
+        await message.answer(f" Ошибка OpenAI:\n`{error_msg}`", parse_mode="Markdown")
 
     generated_book_data = []
 
@@ -98,7 +102,7 @@ async def process_photo(message: types.Message, state: FSMContext):
 
         image_url, img_err = await generate_image(photo_url, img_prompt)
         if img_err and idx == 1:
-            await message.answer(f" Ошибка генерации картинки Replicate:\n`{img_err}`", parse_mode="Markdown")
+            await message.answer(f" Ошибка Replicate:\n`{img_err}`", parse_mode="Markdown")
 
         header = f" Страница {idx}/10\n\n{story_text}"
         
@@ -176,7 +180,6 @@ async def generate_image(face_image_url: str, prompt: str):
         print(f"Ошибка Replicate: {e}")
         return None, str(e)
 
-# Функция сборки PDF-файла с русской кодировкой
 async def build_pdf_book(name: str, theme: str, book_data: list):
     try:
         buffer = io.BytesIO()
@@ -190,21 +193,19 @@ async def build_pdf_book(name: str, theme: str, book_data: list):
         )
         
         styles = getSampleStyleSheet()
-        title_style = ParagraphStyle('TitleStyle', parent=styles['Heading1'], fontName='DejaVu', fontSize=20, alignment=1, spaceAfter=20)
-        body_style = ParagraphStyle('BodyStyle', parent=styles['Normal'], fontName='DejaVu', fontSize=12, leading=16, spaceAfter=15)
+        title_style = ParagraphStyle('TitleStyle', parent=styles['Heading1'], fontName=PDF_FONT, fontSize=18, alignment=1, spaceAfter=20)
+        body_style = ParagraphStyle('BodyStyle', parent=styles['Normal'], fontName=PDF_FONT, fontSize=12, leading=16, spaceAfter=15)
         
         story = []
         
-        # Обложка
         story.append(Paragraph(f"Сказка про {name}", title_style))
-        story.append(Paragraph(f"<b>Тема:</b> {theme}", body_style))
+        story.append(Paragraph(f"Тема: {theme}", body_style))
         story.append(Spacer(1, 2*cm))
         story.append(PageBreak())
 
-        # Страницы книги
         async with aiohttp.ClientSession() as session:
             for item in book_data:
-                story.append(Paragraph(f"<b>Страница {item['page']}</b>", title_style))
+                story.append(Paragraph(f"Страница {item['page']}", title_style))
                 
                 if item['image_url']:
                     try:
@@ -227,7 +228,6 @@ async def build_pdf_book(name: str, theme: str, book_data: list):
         print(f"Ошибка сборки PDF: {e}")
         return None
 
-# Фейковый веб-сервер для Render
 async def handle_health_check(request):
     return web.Response(text="Book Bot is running!")
 
@@ -240,7 +240,6 @@ async def start_web_server():
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
 
-# Авто-пинг против засыпания
 async def keep_alive():
     while True:
         await asyncio.sleep(600)
