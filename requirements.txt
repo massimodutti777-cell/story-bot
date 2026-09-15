@@ -2,3 +2,4 @@ aiogram
 openai
 replicate
 aiohttp
+reportlab
