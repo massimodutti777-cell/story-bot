@@ -3,4 +3,3 @@ openai
 replicate
 aiohttp
 reportlab
-reportlab-fonts
