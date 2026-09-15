@@ -22,6 +22,9 @@ from reportlab.lib.units import cm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 
+# Регистрируем шрифт DejaVuSans для поддержки русского языка
+pdfmetrics.registerFont(TTFont('DejaVu', 'DejaVuSans.ttf'))
+
 # --- КЛЮЧИ ---
 BOT_TOKEN = "8665857884:AAHi6b9NZWqZhM_gUmiRJwcCxzak3TewEls"
 OPENAI_API_KEY = "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"
@@ -83,14 +86,20 @@ async def process_photo(message: types.Message, state: FSMContext):
     file_info = await bot.get_file(photo.file_id)
     photo_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_info.file_path}"
 
-    pages = await generate_full_book(child_name, story_theme)
+    pages, error_msg = await generate_full_book(child_name, story_theme)
+    if error_msg:
+        await message.answer(f" Ошибка генерации текста OpenAI:\n`{error_msg}`", parse_mode="Markdown")
+
     generated_book_data = []
 
     for idx, page in enumerate(pages, 1):
         story_text = page.get("text", "")
         img_prompt = page.get("prompt", "")
 
-        image_url = await generate_image(photo_url, img_prompt)
+        image_url, img_err = await generate_image(photo_url, img_prompt)
+        if img_err and idx == 1:
+            await message.answer(f" Ошибка генерации картинки Replicate:\n`{img_err}`", parse_mode="Markdown")
+
         header = f" Страница {idx}/10\n\n{story_text}"
         
         if image_url:
@@ -106,10 +115,8 @@ async def process_photo(message: types.Message, state: FSMContext):
         
         await asyncio.sleep(1)
 
-    # Сообщение о сборке PDF
     await message.answer(" Собираем вашу сказку в красивый PDF-файл...")
 
-    # Создание PDF книги
     pdf_bytes = await build_pdf_book(child_name, story_theme, generated_book_data)
     
     if pdf_bytes:
@@ -143,11 +150,13 @@ async def generate_full_book(name: str, theme: str):
         )
         content = response.choices[0].message.content
         data = json.loads(content)
-        return data.get("pages", data.get("book", list(data.values())[0]))
+        pages = data.get("pages", data.get("book", list(data.values())[0]))
+        return pages, None
     except Exception as e:
         print(f"Ошибка книги OpenAI: {e}")
-        return [{"text": f"Страница {i}: {name} продолжал свое приключение!", 
-                 "prompt": f"a cute child named {name} in a fairytale adventure, pixar style"} for i in range(1, 11)]
+        fallback = [{"text": f"Страница {i}: {name} продолжал свое приключение по сюжету '{theme}'!", 
+                     "prompt": f"a cute child named {name} in a fairytale adventure, pixar style"} for i in range(1, 11)]
+        return fallback, str(e)
 
 async def generate_image(face_image_url: str, prompt: str):
     try:
@@ -161,12 +170,13 @@ async def generate_image(face_image_url: str, prompt: str):
                 "adapter_strength_ratio": 0.8
             }
         )
-        return output[0] if isinstance(output, list) else output
+        res_url = output[0] if isinstance(output, list) else output
+        return res_url, None
     except Exception as e:
         print(f"Ошибка Replicate: {e}")
-        return None
+        return None, str(e)
 
-# Функция сборки PDF-файла в памяти
+# Функция сборки PDF-файла с русской кодировкой
 async def build_pdf_book(name: str, theme: str, book_data: list):
     try:
         buffer = io.BytesIO()
@@ -180,8 +190,8 @@ async def build_pdf_book(name: str, theme: str, book_data: list):
         )
         
         styles = getSampleStyleSheet()
-        title_style = ParagraphStyle('TitleStyle', parent=styles['Heading1'], fontName='Helvetica-Bold', fontSize=22, alignment=1, spaceAfter=20)
-        body_style = ParagraphStyle('BodyStyle', parent=styles['Normal'], fontName='Helvetica', fontSize=14, leading=18, spaceAfter=15)
+        title_style = ParagraphStyle('TitleStyle', parent=styles['Heading1'], fontName='DejaVu', fontSize=20, alignment=1, spaceAfter=20)
+        body_style = ParagraphStyle('BodyStyle', parent=styles['Normal'], fontName='DejaVu', fontSize=12, leading=16, spaceAfter=15)
         
         story = []
         
@@ -196,17 +206,16 @@ async def build_pdf_book(name: str, theme: str, book_data: list):
             for item in book_data:
                 story.append(Paragraph(f"<b>Страница {item['page']}</b>", title_style))
                 
-                # Загружаем картинку, если она сгенерирована
                 if item['image_url']:
                     try:
                         async with session.get(item['image_url']) as resp:
                             if resp.status == 200:
                                 img_data = await resp.read()
                                 img_buffer = io.BytesIO(img_data)
-                                story.append(RLImage(img_buffer, width=14*cm, height=14*cm))
+                                story.append(RLImage(img_buffer, width=13*cm, height=13*cm))
                                 story.append(Spacer(1, 0.5*cm))
                     except Exception as img_err:
-                        print(f"Ошибка добавления картинки в PDF: {img_err}")
+                        print(f"Ошибка картинки в PDF: {img_err}")
                 
                 story.append(Paragraph(item['text'], body_style))
                 story.append(PageBreak())
@@ -255,4 +264,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
