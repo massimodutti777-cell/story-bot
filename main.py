@@ -142,7 +142,22 @@ async def start_web_server():
 async def main():
     logging.basicConfig(level=logging.INFO)
     await start_web_server()
+    asyncio.create_task(keep_alive())
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
+import aiohttp
+
+# Укажите ваш URL с Render
+RENDER_URL = "https://story-bot-34cj.onrender.com"
+
+async def keep_alive():
+    while True:
+        await asyncio.sleep(600)  # Каждые 10 минут
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(RENDER_URL) as resp:
+                    print(f"Self-ping status: {resp.status}")
+        except Exception as e:
+            print(f"Ping failed: {e}")
