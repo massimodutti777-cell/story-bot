@@ -29,10 +29,11 @@ try:
 except Exception:
     PDF_FONT = 'Helvetica'
 
-# --- КЛЮЧИ ---
-BOT_TOKEN = "8665857884:AAHi6b9NZWqZhM_gUmiRJwcCxzak3TewEls"
-OPENAI_API_KEY = "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"
-REPLICATE_API_TOKEN = "r8_WzlsNwcDX5QSmo08td6Iz97jpvlxHbw31lvS0"
+# Чтение ключей из переменных окружения Render:
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+REPLICATE_API_TOKEN = os.environ.get("REPLICATE_API_TOKEN")
+
 
 RENDER_URL = "https://story-bot-34cj.onrender.com"  # Ваш URL на Render
 
