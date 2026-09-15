@@ -31,8 +31,8 @@ except Exception:
 
 # --- КЛЮЧИ ---
 BOT_TOKEN = "8665857884:AAHi6b9NZWqZhM_gUmiRJwcCxzak3TewEls"
-OPENAI_API_KEY = "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"
-REPLICATE_API_TOKEN = "r8_cDVzEaXQy7tlWRvS7RJIZZr7edkHMMG457NkK"
+OPENAI_API_KEY = "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"
+REPLICATE_API_TOKEN = "r8_WzlsNwcDX5QSmo08td6Iz97jpvlxHbw31lvS0"
 
 RENDER_URL = "https://story-bot-34cj.onrender.com"  # Ваш URL на Render
 
