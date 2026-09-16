@@ -152,27 +152,28 @@ async def generate_full_book(name: str, theme: str):
 
 async def generate_image(face_image_url: str, prompt: str):
     try:
-        # Использование официальной модели PhotoMaker без жесткого ID версии
+        # Актуальная версия PhotoMaker с официальным хэшем
         output = replicate.run(
-            "tencentarc/photomaker",
+            "tencentarc/photomaker:ddfc2b08d209f9fa8c1e28a005d79c2f9f4701a0b92736a77953b05252f36f6d",
             input={
-                "input_image": face_image_url,
-                "prompt": f"a photo of img child, {prompt}, 3d pixar style, vibrant fairytale environment, cinematic lighting",
-                "negative_prompt": "ugly, deformed, bad eyes, realistic photographic skin flaws, dark background",
-                "num_steps": 25,
+                "input_id_images": [face_image_url],
+                "prompt": f"a photo of img child, {prompt}, 3d pixar style, fairytale background, vibrant colors",
+                "negative_prompt": "ugly, deformed, bad face, dark background, low quality",
+                "num_steps": 20,
                 "style_strength_ratio": 20
             }
         )
         res_url = output[0] if isinstance(output, list) else output
         return res_url, None
     except Exception as e:
-        print(f"Ошибка PhotoMaker, переключение на резервный генератор SDXL: {e}")
+        print(f"Ошибка PhotoMaker: {e}, переключение на SDXL")
         try:
+            # Резервная стабильная версия SDXL
             output = replicate.run(
-                "stability-ai/sdxl",
+                "stability-ai/sdxl:39ed52f2a78e934b3ba6e2a89f5b1c712de7dfea535525255b1aa35c5565e08b",
                 input={
-                    "prompt": f"{prompt}, pixar 3d animation style, cute character, fairytale, magic lighting, vibrant colors",
-                    "negative_prompt": "ugly, blurry, low resolution, dark, monochrome"
+                    "prompt": f"{prompt}, pixar style, cute 3d character, fairytale background, vivid colors",
+                    "negative_prompt": "ugly, blurry, bad photo"
                 }
             )
             res_url = output[0] if isinstance(output, list) else output
