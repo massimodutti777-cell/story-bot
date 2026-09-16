@@ -152,28 +152,27 @@ async def generate_full_book(name: str, theme: str):
 
 async def generate_image(face_image_url: str, prompt: str):
     try:
-        # Актуальная версия PhotoMaker с официальным хэшем
+        # Используем актуальную и быстро работающую модель FLUX.1
         output = replicate.run(
-            "tencentarc/photomaker:ddfc2b08d209f9fa8c1e28a005d79c2f9f4701a0b92736a77953b05252f36f6d",
+            "black-forest-labs/flux-schnell",
             input={
-                "input_id_images": [face_image_url],
-                "prompt": f"a photo of img child, {prompt}, 3d pixar style, fairytale background, vibrant colors",
-                "negative_prompt": "ugly, deformed, bad face, dark background, low quality",
-                "num_steps": 20,
-                "style_strength_ratio": 20
+                "prompt": f"A 3D Pixar style children's book illustration of a cute child named protagonist, {prompt}, magical bright colors, high quality",
+                "num_inference_steps": 4,
+                "aspect_ratio": "1:1"
             }
         )
         res_url = output[0] if isinstance(output, list) else output
         return res_url, None
     except Exception as e:
-        print(f"Ошибка PhotoMaker: {e}, переключение на SDXL")
+        print(f"Ошибка Replicate: {e}")
+        # Резервный вызов SDXL Lightning
         try:
-            # Резервная стабильная версия SDXL
             output = replicate.run(
-                "stability-ai/sdxl:39ed52f2a78e934b3ba6e2a89f5b1c712de7dfea535525255b1aa35c5565e08b",
+                "bytedance/sdxl-lightning-4step:558fe9d4c646c732771168c8d388614c56e30681b613017575218d6138d62681",
                 input={
-                    "prompt": f"{prompt}, pixar style, cute 3d character, fairytale background, vivid colors",
-                    "negative_prompt": "ugly, blurry, bad photo"
+                    "prompt": f"Pixar style 3D illustration, {prompt}, fairytale, vibrant colors",
+                    "width": 1024,
+                    "height": 1024
                 }
             )
             res_url = output[0] if isinstance(output, list) else output
