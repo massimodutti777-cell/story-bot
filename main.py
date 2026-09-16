@@ -152,12 +152,12 @@ async def generate_full_book(name: str, theme: str):
 
 async def generate_image(face_image_url: str, prompt: str):
     try:
-        # Модель PhotoMaker для точного переноса лица персонажа с фотографии
+        # Использование официальной модели PhotoMaker без жесткого ID версии
         output = replicate.run(
-            "tencentarc/photomaker:ddfc2b08d209f9fa8c1e28a005d79c2f9f4701a0b92736a77953b05252f36f6d",
+            "tencentarc/photomaker",
             input={
                 "input_image": face_image_url,
-                "prompt": f"a photo of img child, {prompt}, 3d pixar style, vibrant fairytale environment, cinematic lighting, highly detailed",
+                "prompt": f"a photo of img child, {prompt}, 3d pixar style, vibrant fairytale environment, cinematic lighting",
                 "negative_prompt": "ugly, deformed, bad eyes, realistic photographic skin flaws, dark background",
                 "num_steps": 25,
                 "style_strength_ratio": 20
@@ -166,10 +166,10 @@ async def generate_image(face_image_url: str, prompt: str):
         res_url = output[0] if isinstance(output, list) else output
         return res_url, None
     except Exception as e:
-        print(f"Ошибка Replicate PhotoMaker, переключение на стандартный генератор: {e}")
+        print(f"Ошибка PhotoMaker, переключение на резервный генератор SDXL: {e}")
         try:
             output = replicate.run(
-                "stability-ai/sdxl:39ed52f2a78e934b3ba6e2a89f5b1c712de7dfea535525255b1aa35c5565e08b",
+                "stability-ai/sdxl",
                 input={
                     "prompt": f"{prompt}, pixar 3d animation style, cute character, fairytale, magic lighting, vibrant colors",
                     "negative_prompt": "ugly, blurry, low resolution, dark, monochrome"
