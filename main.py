@@ -163,14 +163,15 @@ async def generate_full_book(name: str, theme: str):
                      "prompt": f"a cute child named {name} in a fairytale adventure, pixar style"} for i in range(1, 11)]
         return fallback, str(e)
 
-async def generate_image(face_image_url: str, prompt: str):
+async async def generate_image(face_image_url: str, prompt: str):
     try:
+        # Используем актуальный вызов InstantID через Replicate
         output = replicate.run(
-            "instant-id/instant-id:41ecf0db217e20112001c203f14213773ed240578e063b218d6411d9f82d1c67",
+            "i-like-ai/instant-id:41ecf0db217e20112001c203f14213773ed240578e063b218d6411d9f82d1c67",
             input={
                 "image": face_image_url,
-                "prompt": prompt,
-                "negative_prompt": "ugly, blurry, distorted face, bad anatomy",
+                "prompt": f"{prompt}, pixar style, 3d render, detailed, highly crisp",
+                "negative_prompt": "ugly, blurry, distorted face, bad anatomy, low quality",
                 "identity_weight": 0.8,
                 "adapter_strength_ratio": 0.8
             }
@@ -178,8 +179,20 @@ async def generate_image(face_image_url: str, prompt: str):
         res_url = output[0] if isinstance(output, list) else output
         return res_url, None
     except Exception as e:
-        print(f"Ошибка Replicate: {e}")
-        return None, str(e)
+        # Резервный вариант на случай недоступности InstantID (генерация по текстовому промпту через SDXL)
+        try:
+            output = replicate.run(
+                "stability-ai/sdxl:39ed52f2a78e934b3ba6e2a89f5b1c712de7dfea535525255b1aa35c5565e08b",
+                input={
+                    "prompt": f"{prompt}, pixar style, cute 3d character, children book illustration",
+                    "negative_prompt": "ugly, blurry, low resolution"
+                }
+            )
+            res_url = output[0] if isinstance(output, list) else output
+            return res_url, None
+        except Exception as fallback_err:
+            print(f"Ошибка Replicate: {fallback_err}")
+            return None, str(e)
 
 async def build_pdf_book(name: str, theme: str, book_data: list):
     try:
