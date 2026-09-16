@@ -13,23 +13,9 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove, BotCommand, BufferedInputFile
 import openai
 import replicate
+from weasyprint import HTML
 
-# --- ReportLab для создания PDF ---
-from reportlab.lib.pagesizes import A4
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image as RLImage, PageBreak
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.units import cm
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
-
-# Регистрация стандартного шрифта
-try:
-    pdfmetrics.registerFont(TTFont('DejaVu', 'DejaVuSans.ttf'))
-    PDF_FONT = 'DejaVu'
-except Exception:
-    PDF_FONT = 'Helvetica'
-
-# --- КЛЮЧИ (безопасно забираются из Environment Variables Render) ---
+# --- КЛЮЧИ (безопасно считываются из переменных окружения Render) ---
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 REPLICATE_API_TOKEN = os.environ.get("REPLICATE_API_TOKEN")
@@ -50,17 +36,17 @@ class StoryForm(StatesGroup):
 
 def get_restart_keyboard():
     return ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text=" Создать новую сказку")]],
+        keyboard=[[KeyboardButton(text="Создать новую сказку")]],
         resize_keyboard=True,
         one_time_keyboard=True
     )
 
 @dp.message(CommandStart())
-@dp.message(F.text == " Создать новую сказку")
+@dp.message(F.text == "Создать новую сказку")
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
     await message.answer(
-        "Привет! Я создаю персональные иллюстрированные книги для детей.\n\nКак зовут главного героя книги?",
+        "Привет! Я создаю волшебные иллюстрированные книги для детей.\n\nКак зовут главного героя книги?",
         reply_markup=ReplyKeyboardRemove()
     )
     await state.set_state(StoryForm.waiting_for_name)
@@ -77,7 +63,7 @@ async def process_name(message: types.Message, state: FSMContext):
 @dp.message(StoryForm.waiting_for_theme)
 async def process_theme(message: types.Message, state: FSMContext):
     await state.update_data(story_theme=message.text)
-    await message.answer("Отлично! Теперь отправьте четкое фото ребенка — я использую его для создания иллюстраций.")
+    await message.answer("Отлично! Теперь отправьте четкое фото ребенка — я использую его для создания персонажа.")
     await state.set_state(StoryForm.waiting_for_photo)
 
 @dp.message(StoryForm.waiting_for_photo, F.photo)
@@ -86,7 +72,7 @@ async def process_photo(message: types.Message, state: FSMContext):
     child_name = data['child_name']
     story_theme = data['story_theme']
     
-    await message.answer(" Пишу большую книгу на 10 страниц и генерирую иллюстрации... Это займет около 2–3 минут.")
+    await message.answer("Пишу волшебную книгу и генерирую персональные иллюстрации... Это займет около 2–3 минут.")
 
     photo = message.photo[-1]
     file_info = await bot.get_file(photo.file_id)
@@ -94,7 +80,7 @@ async def process_photo(message: types.Message, state: FSMContext):
 
     pages, error_msg = await generate_full_book(child_name, story_theme)
     if error_msg:
-        await message.answer(f" Ошибка OpenAI:\n`{error_msg}`", parse_mode="Markdown")
+        await message.answer(f"Ошибка OpenAI:\n`{error_msg}`", parse_mode="Markdown")
 
     generated_book_data = []
 
@@ -104,9 +90,9 @@ async def process_photo(message: types.Message, state: FSMContext):
 
         image_url, img_err = await generate_image(photo_url, img_prompt)
         if img_err and idx == 1:
-            await message.answer(f" Ошибка Replicate:\n`{img_err}`", parse_mode="Markdown")
+            await message.answer(f"Ошибка Replicate:\n`{img_err}`", parse_mode="Markdown")
 
-        header = f" Страница {idx}/10\n\n{story_text}"
+        header = f"Страница {idx}/10\n\n{story_text}"
         
         if image_url:
             await message.answer_photo(photo=image_url, caption=header)
@@ -121,19 +107,19 @@ async def process_photo(message: types.Message, state: FSMContext):
         
         await asyncio.sleep(1)
 
-    await message.answer(" Собираем вашу сказку в красивый PDF-файл...")
+    await message.answer("Верстаем вашу красочную PDF-книгу...")
 
-    pdf_bytes = await build_pdf_book(child_name, story_theme, generated_book_data)
+    pdf_bytes = await build_pdf_book_html(child_name, story_theme, generated_book_data)
     
     if pdf_bytes:
         document = BufferedInputFile(pdf_bytes, filename=f"Сказка_{child_name}.pdf")
         await message.answer_document(
             document=document, 
-            caption=f" Ваша иллюстрированная книга про {child_name} готова!",
+            caption=f"Ваша иллюстрированная книга про {child_name} готова!",
             reply_markup=get_restart_keyboard()
         )
     else:
-        await message.answer(" Не удалось собрать PDF, но вы можете прочитать сказку выше!", reply_markup=get_restart_keyboard())
+        await message.answer("Не удалось собрать PDF, но вы можете прочитать сказку выше!", reply_markup=get_restart_keyboard())
 
     await state.clear()
 
@@ -147,7 +133,7 @@ async def generate_full_book(name: str, theme: str):
         Ответь СТРОГО в формате JSON-массива из 10 объектов без лишнего текста.
         Каждый объект должен содержать:
         - "text": текст страницы (2-4 предложения).
-        - "prompt": описание сцены на английском языке в стиле 3D Pixar.
+        - "prompt": описание сцены на английском языке в стиле 3D Pixar img.
         """
         response = await client.chat.completions.create(
             model="gpt-4o-mini",
@@ -164,64 +150,155 @@ async def generate_full_book(name: str, theme: str):
                      "prompt": f"a cute child named {name} in a fairytale adventure, pixar style"} for i in range(1, 11)]
         return fallback, str(e)
 
-import urllib.parse
-
 async def generate_image(face_image_url: str, prompt: str):
     try:
-        # Полностью бесплатная генерация картинки по промпту
-        clean_prompt = urllib.parse.quote(f"{prompt}, pixar style, cute 3d character, children book illustration")
-        image_url = f"https://image.pollinations.ai/prompt/{clean_prompt}?width=1024&height=1024&nologo=true"
-        return image_url, None
-    except Exception as e:
-        print(f"Ошибка генерации картинки: {e}")
-        return None, str(e)
-
-async def build_pdf_book(name: str, theme: str, book_data: list):
-    try:
-        buffer = io.BytesIO()
-        doc = SimpleDocTemplate(
-            buffer, 
-            pagesize=A4, 
-            rightMargin=2*cm, 
-            leftMargin=2*cm, 
-            topMargin=2*cm, 
-            bottomMargin=2*cm
+        # Модель PhotoMaker для точного переноса лица персонажа с фотографии
+        output = replicate.run(
+            "tencentarc/photomaker:ddfc2b08d209f9fa8c1e28a005d79c2f9f4701a0b92736a77953b05252f36f6d",
+            input={
+                "input_image": face_image_url,
+                "prompt": f"a photo of img child, {prompt}, 3d pixar style, vibrant fairytale environment, cinematic lighting, highly detailed",
+                "negative_prompt": "ugly, deformed, bad eyes, realistic photographic skin flaws, dark background",
+                "num_steps": 25,
+                "style_strength_ratio": 20
+            }
         )
-        
-        styles = getSampleStyleSheet()
-        title_style = ParagraphStyle('TitleStyle', parent=styles['Heading1'], fontName=PDF_FONT, fontSize=18, alignment=1, spaceAfter=20)
-        body_style = ParagraphStyle('BodyStyle', parent=styles['Normal'], fontName=PDF_FONT, fontSize=12, leading=16, spaceAfter=15)
-        
-        story = []
-        
-        story.append(Paragraph(f"Сказка про {name}", title_style))
-        story.append(Paragraph(f"Тема: {theme}", body_style))
-        story.append(Spacer(1, 2*cm))
-        story.append(PageBreak())
-
-        async with aiohttp.ClientSession() as session:
-            for item in book_data:
-                story.append(Paragraph(f"Страница {item['page']}", title_style))
-                
-                if item['image_url']:
-                    try:
-                        async with session.get(item['image_url']) as resp:
-                            if resp.status == 200:
-                                img_data = await resp.read()
-                                img_buffer = io.BytesIO(img_data)
-                                story.append(RLImage(img_buffer, width=13*cm, height=13*cm))
-                                story.append(Spacer(1, 0.5*cm))
-                    except Exception as img_err:
-                        print(f"Ошибка картинки в PDF: {img_err}")
-                
-                story.append(Paragraph(item['text'], body_style))
-                story.append(PageBreak())
-
-        doc.build(story)
-        buffer.seek(0)
-        return buffer.getvalue()
+        res_url = output[0] if isinstance(output, list) else output
+        return res_url, None
     except Exception as e:
-        print(f"Ошибка сборки PDF: {e}")
+        print(f"Ошибка Replicate PhotoMaker, переключение на стандартный генератор: {e}")
+        try:
+            output = replicate.run(
+                "stability-ai/sdxl:39ed52f2a78e934b3ba6e2a89f5b1c712de7dfea535525255b1aa35c5565e08b",
+                input={
+                    "prompt": f"{prompt}, pixar 3d animation style, cute character, fairytale, magic lighting, vibrant colors",
+                    "negative_prompt": "ugly, blurry, low resolution, dark, monochrome"
+                }
+            )
+            res_url = output[0] if isinstance(output, list) else output
+            return res_url, None
+        except Exception as fallback_err:
+            return None, str(e)
+
+async def build_pdf_book_html(name: str, theme: str, book_data: list):
+    try:
+        html_content = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="utf-8">
+            <style>
+                @page {{
+                    size: A4 portrait;
+                    margin: 0;
+                    background-color: #1a102f;
+                }}
+                *, *::before, *::after {{
+                    box-sizing: border-box;
+                }}
+                body {{
+                    margin: 0;
+                    padding: 0;
+                    font-family: 'DejaVu Sans', sans-serif;
+                    color: #ffffff;
+                }}
+                .cover-page {{
+                    width: 210mm;
+                    height: 297mm;
+                    display: block;
+                    position: relative;
+                    background: linear-gradient(135deg, #2b1055 0%, #7597de 100%);
+                    text-align: center;
+                    page-break-after: always;
+                }}
+                .cover-title {{
+                    position: absolute;
+                    top: 80mm;
+                    left: 20mm;
+                    right: 20mm;
+                    font-size: 32pt;
+                    font-weight: bold;
+                    color: #ffe600;
+                    text-shadow: 2px 2px 8px rgba(0,0,0,0.6);
+                }}
+                .cover-subtitle {{
+                    position: absolute;
+                    top: 130mm;
+                    left: 20mm;
+                    right: 20mm;
+                    font-size: 18pt;
+                    color: #ffffff;
+                }}
+                .story-page {{
+                    width: 210mm;
+                    height: 297mm;
+                    position: relative;
+                    page-break-after: always;
+                    background-color: #0f0c1b;
+                }}
+                .page-image {{
+                    position: absolute;
+                    top: 15mm;
+                    left: 15mm;
+                    width: 180mm;
+                    height: 180mm;
+                    border-radius: 12px;
+                    object-fit: cover;
+                    box-shadow: 0 8px 20px rgba(0,0,0,0.5);
+                }}
+                .text-box {{
+                    position: absolute;
+                    top: 205mm;
+                    left: 15mm;
+                    width: 180mm;
+                    height: 75mm;
+                    background: rgba(255, 255, 255, 0.95);
+                    border-radius: 12px;
+                    padding: 8mm 10mm;
+                    color: #1a102f;
+                }}
+                .page-number {{
+                    font-size: 11pt;
+                    font-weight: bold;
+                    color: #6b21a8;
+                    margin-bottom: 3mm;
+                }}
+                .page-text {{
+                    font-size: 13pt;
+                    line-height: 1.5;
+                    color: #241442;
+                }}
+            </style>
+        </head>
+        <body>
+            <div class="cover-page">
+                <div class="cover-title">Сказка про {name}</div>
+                <div class="cover-subtitle">{theme}</div>
+            </div>
+        """
+
+        for item in book_data:
+            img_src = item['image_url'] if item['image_url'] else ""
+            html_content += f"""
+            <div class="story-page">
+                {"<img class='page-image' src='" + img_src + "'/>" if img_src else ""}
+                <div class="text-box">
+                    <div class="page-number">Страница {item['page']}</div>
+                    <div class="page-text">{item['text']}</div>
+                </div>
+            </div>
+            """
+
+        html_content += """
+        </body>
+        </html>
+        """
+
+        pdf_bytes = HTML(string=html_content).write_pdf()
+        return pdf_bytes
+
+    except Exception as e:
+        print(f"Ошибка генерации HTML-PDF: {e}")
         return None
 
 async def handle_health_check(request):
@@ -252,7 +329,7 @@ async def main():
     asyncio.create_task(keep_alive())
     
     await bot.set_my_commands([
-        BotCommand(command="start", description=" Начать сначала / Новая сказка")
+        BotCommand(command="start", description="Начать сначала / Новая сказка")
     ])
     
     await dp.start_polling(bot)
