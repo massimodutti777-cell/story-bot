@@ -164,20 +164,16 @@ async def generate_full_book(name: str, theme: str):
                      "prompt": f"a cute child named {name} in a fairytale adventure, pixar style"} for i in range(1, 11)]
         return fallback, str(e)
 
+import urllib.parse
+
 async def generate_image(face_image_url: str, prompt: str):
     try:
-        # Стабильная и проверенная версия SDXL
-        output = replicate.run(
-            "stability-ai/sdxl:39ed52f2a78e934b3ba6e2a89f5b1c712de7dfea535525255b1aa35c5565e08b",
-            input={
-                "prompt": f"{prompt}, pixar style, cute 3d character, children book illustration, vivid colors",
-                "negative_prompt": "ugly, blurry, distorted, low resolution"
-            }
-        )
-        res_url = output[0] if isinstance(output, list) else output
-        return res_url, None
+        # Полностью бесплатная генерация картинки по промпту
+        clean_prompt = urllib.parse.quote(f"{prompt}, pixar style, cute 3d character, children book illustration")
+        image_url = f"https://image.pollinations.ai/prompt/{clean_prompt}?width=1024&height=1024&nologo=true"
+        return image_url, None
     except Exception as e:
-        print(f"Ошибка Replicate: {e}")
+        print(f"Ошибка генерации картинки: {e}")
         return None, str(e)
 
 async def build_pdf_book(name: str, theme: str, book_data: list):
