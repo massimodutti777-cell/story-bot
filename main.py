@@ -329,15 +329,19 @@ async def main():
     asyncio.create_task(keep_alive())
     
 async def main():
-    # Настройка меню команд
+    # 1. Принудительно очищаем вебхук перед запуском
+    try:
+        await bot.delete_webhook(drop_pending_updates=True)
+        print("Webhook successfully deleted")
+    except Exception as e:
+        print(f"Error deleting webhook: {e}")
+
+    # 2. Устанавливаем меню команд
     await bot.set_my_commands([
         BotCommand(command="start", description="Начать сначала / Новая сказка")
     ])
-    
-    # Принудительно сбрасываем активный вебхук
-    await bot.delete_webhook(drop_pending_updates=True)
-    
-    # Запускаем поллинг
+
+    # 3. Запускаем поллинг
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
