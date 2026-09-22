@@ -330,10 +330,12 @@ async def main():
     
     await bot.set_my_commands([
         BotCommand(command="start", description="Начать сначала / Новая сказка")
-    ])
 
-    bot.delete_webhook()
+async def main():
+    # Автоматически сбрасываем вебхук перед стартом
+    await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    import asyncio
+    asyncio.run(main()
