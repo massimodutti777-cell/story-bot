@@ -328,14 +328,19 @@ async def main():
     await start_web_server()
     asyncio.create_task(keep_alive())
     
+ async def main():
+    # Настройка команд бота
     await bot.set_my_commands([
         BotCommand(command="start", description="Начать сначала / Новая сказка")
-
-async def main():
+    ])
+    
     # Автоматически сбрасываем вебхук перед стартом
     await bot.delete_webhook(drop_pending_updates=True)
+    
+    # Запуск поллинга
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
     import asyncio
-    asyncio.run(main()
+    asyncio.run(main())
+
