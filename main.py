@@ -331,7 +331,8 @@ async def main():
     await bot.set_my_commands([
         BotCommand(command="start", description="Начать сначала / Новая сказка")
     ])
-    
+
+    bot.delete_webhook()
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
