@@ -14,6 +14,9 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemo
 import openai
 import replicate
 from weasyprint import HTML
+import os
+from aiohttp import web
+
 
 # --- КЛЮЧИ (безопасно считываются из переменных окружения Render) ---
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
@@ -344,6 +347,40 @@ async def main():
     # 3. Запускаем поллинг
     await dp.start_polling(bot)
 
+# --- Блок поддержки порта для Render ---
+async def handle_health_check(request):
+    return web.Response(text="Bot is alive!")
+
+async def start_dummy_server():
+    app = web.Application()
+    app.router.add_get("/", handle_health_check)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.environ.get("PORT", 8080))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+
+# --- Главная функция запуска бота ---
+async def main():
+    # 1. Запускаем фоновый веб-сервер, чтобы Render видел открытый порт
+    await start_dummy_server()
+    
+    # 2. Сбрасываем вебхук перед стартом поллинга
+    try:
+        await bot.delete_webhook(drop_pending_updates=True)
+        print("Webhook successfully deleted")
+    except Exception as e:
+        print(f"Error deleting webhook: {e}")
+
+    # 3. Устанавливаем меню команд
+    await bot.set_my_commands([
+        BotCommand(command="start", description="Начать сначала / Новая сказка")
+    ])
+
+    # 4. Запускаем поллинг
+    await dp.start_polling(bot)
+
 if __name__ == "__main__":
     import asyncio
     asyncio.run(main())
+
