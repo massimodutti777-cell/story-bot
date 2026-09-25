@@ -16,7 +16,7 @@ import openai
 import replicate
 from weasyprint import HTML
 
-# --- КЛЮЧИ (безопасно считываются из переменных окружения Render) ---
+# --- КЛЮЧИ (из переменных окружения Render) ---
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 REPLICATE_API_TOKEN = os.environ.get("REPLICATE_API_TOKEN")
@@ -73,12 +73,16 @@ async def process_photo(message: types.Message, state: FSMContext):
     child_name = data['child_name']
     story_theme = data['story_theme']
     
-    await message.answer("Пишу волшебную книгу и генерирую персональные иллюстрации... Это займет около 2–3 минут.")
+    await message.answer("Анализирую фото и пишу волшебную книгу... Это займет около 2–3 минут.")
 
     photo = message.photo[-1]
     file_info = await bot.get_file(photo.file_id)
     photo_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_info.file_path}"
 
+    # 1. Распознаем внешность ребенка через GPT Vision
+    appearance_desc = await analyze_child_photo(photo_url)
+
+    # 2. Генерируем сюжет книги
     pages, error_msg = await generate_full_book(child_name, story_theme)
     if error_msg:
         await message.answer(f"Ошибка OpenAI:\n`{error_msg}`", parse_mode="Markdown")
@@ -90,7 +94,7 @@ async def process_photo(message: types.Message, state: FSMContext):
         img_prompt = page.get("prompt", "")
 
         try:
-            image_url, img_err = await generate_image(photo_url, img_prompt, child_name)
+            image_url, img_err = await generate_image(img_prompt, child_name, appearance_desc)
         except Exception as e:
             print(f"Error generating image on page {idx}: {e}")
             image_url = None
@@ -116,7 +120,7 @@ async def process_photo(message: types.Message, state: FSMContext):
 
     await message.answer("Верстаем вашу красочную PDF-книгу...")
 
-    pdf_bytes = await build_pdf_book_html(child_name, story_theme, generated_book_data, photo_url)
+    pdf_bytes = await build_pdf_book_html(child_name, story_theme, generated_book_data, appearance_desc)
     
     if pdf_bytes:
         document = BufferedInputFile(pdf_bytes, filename=f"Сказка_{child_name}.pdf")
@@ -130,6 +134,30 @@ async def process_photo(message: types.Message, state: FSMContext):
 
     await state.clear()
 
+async def analyze_child_photo(photo_url: str) -> str:
+    """Анализирует черты лица ребенка по фото и создает детальный английский промпт"""
+    try:
+        client = openai.AsyncOpenAI(api_key=OPENAI_API_KEY)
+        response = await client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "Describe this child's appearance for a 3D Pixar character prompt. Mention hair style/color, eye shape/color, age appearance, ethnicity/skin tone, and distinctive clothing if present. Keep it short (1-2 sentences in English)."},
+                        {"type": "image_url", "image_url": {"url": photo_url}}
+                    ]
+                }
+            ],
+            max_tokens=100
+        )
+        desc = response.choices[0].message.content.strip()
+        print(f"Распознанная внешность: {desc}")
+        return desc
+    except Exception as e:
+        print(f"Ошибка анализа фото GPT Vision: {e}")
+        return "a cute young child with dark hair, brown eyes, friendly smile"
+
 async def generate_full_book(name: str, theme: str):
     try:
         client = openai.AsyncOpenAI(api_key=OPENAI_API_KEY)
@@ -142,7 +170,7 @@ async def generate_full_book(name: str, theme: str):
         Ответь СТРОГО в формате JSON-массива из 10 объектов без лишнего текста.
         Каждый объект должен содержать:
         - "text": текст страницы (2-4 предложения).
-        - "prompt": описание сцены на английском языке, в котором ОБЯЗАТЕЛЬНО присутствует "a cute child protagonist named {name}".
+        - "prompt": описание действия сцены на английском языке (например: "exploring a glowing magical forest with dinosaurs").
         """
         response = await client.chat.completions.create(
             model="gpt-4o-mini",
@@ -156,34 +184,16 @@ async def generate_full_book(name: str, theme: str):
     except Exception as e:
         print(f"Ошибка книги OpenAI: {e}")
         fallback = [{"text": f"Страница {i}: {name} продолжал свое приключение по сюжету '{theme}'!", 
-                     "prompt": f"a cute young child protagonist named {name} in a fairytale adventure, 3d pixar character style"} for i in range(1, 11)]
+                     "prompt": "exploring a magical fairytale forest, pixar 3d style"} for i in range(1, 11)]
         return fallback, str(e)
 
-def _run_replicate_photomaker(prompt: str, face_url: str, name: str):
-    full_prompt = f"a cute young child protagonist named {name} img, 3D Pixar animation style, {prompt}, highly detailed, bright sunny lighting, vibrant colors, 8k resolution, clear sharp focus"
+def _run_replicate_flux(prompt: str, name: str, appearance: str):
+    full_prompt = f"3D Pixar animation style illustration, cute young child protagonist named {name}, {appearance}, {prompt}, magical bright sunny lighting, vibrant rich colors, clear sharp focus, highly detailed, 8k resolution"
     
-    # Попытка 1: Использование специализированной модели переноса лица PhotoMaker
-    if face_url:
-        try:
-            output = replicate.run(
-                "tencentarc/photomaker:dd222f98a4f221055f1b68ed0b28d011f010323386e81f1816e04812a4dfc0be",
-                input={
-                    "prompt": full_prompt,
-                    "input_images": [face_url],
-                    "num_steps": 20,
-                    "style_name": "Disney Charactor"
-                }
-            )
-            res = output[0] if isinstance(output, list) else output
-            return str(res)
-        except Exception as pm_err:
-            print(f"PhotoMaker Error, falling back to Flux: {pm_err}")
-
-    # Попытка 2: Четкий FLUX без конфликтующих параметров
     output = replicate.run(
         "black-forest-labs/flux-schnell",
         input={
-            "prompt": f"A 3D Pixar style character illustration of a cute young boy named {name}, {prompt}, magical bright sunny lighting, sharp focus, 8k, masterpiece",
+            "prompt": full_prompt,
             "num_inference_steps": 4,
             "aspect_ratio": "1:1"
         }
@@ -191,31 +201,30 @@ def _run_replicate_photomaker(prompt: str, face_url: str, name: str):
     res = output[0] if isinstance(output, list) else output
     return str(res)
 
-async def generate_image(face_image_url: str, prompt: str, name: str = "child"):
-    # Попытка через Replicate с запасом времени в 45 секунд
+async def generate_image(prompt: str, name: str, appearance: str):
     try:
         res_url = await asyncio.wait_for(
-            asyncio.to_thread(_run_replicate_photomaker, prompt, face_image_url, name),
-            timeout=45.0
+            asyncio.to_thread(_run_replicate_flux, prompt, name, appearance),
+            timeout=25.0
         )
         if res_url:
             return res_url, None
     except Exception as e:
-        print(f"Replicate Error/Timeout: {e}")
+        print(f"Replicate Flux Error/Timeout: {e}")
 
-    # Фолбэк на Pollinations только в крайнем случае
+    # Фолбэк с тем же точным описанием внешности
     try:
-        styled_prompt = f"3D Pixar style children book illustration, cute young child protagonist named {name}, {prompt}, fairytale, bright sunny lighting, sharp focus"
+        styled_prompt = f"3D Pixar style children book illustration, cute young child protagonist named {name}, {appearance}, {prompt}, bright sunny lighting, sharp focus"
         encoded = urllib.parse.quote(styled_prompt)
         fallback_url = f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&seed={urllib.parse.quote(prompt)}&nologo=true"
         return fallback_url, None
     except Exception as fallback_err:
         return None, str(fallback_err)
 
-async def build_pdf_book_html(name: str, theme: str, book_data: list, face_url: str):
+async def build_pdf_book_html(name: str, theme: str, book_data: list, appearance: str):
     try:
-        # Обложка по теме
-        cover_bg, _ = await generate_image(face_url, f"magical cover art for children book with cute child protagonist named {name} exploring {theme}, vibrant bright fairytale colors", name)
+        # Яркая обложка
+        cover_bg, _ = await generate_image(f"magical title cover art for children book about {theme}, cheerful fairytale atmosphere", name, appearance)
         cover_bg_style = f"background-image: url('{cover_bg}'); background-size: cover; background-position: center;" if cover_bg else "background: linear-gradient(135deg, #2b1055 0%, #7597de 100%);"
 
         html_content = f"""
@@ -366,23 +375,19 @@ async def keep_alive():
 async def main():
     logging.basicConfig(level=logging.INFO)
     
-    # 1. Запуск фейкового веб-сервера и фонового пинга
     await start_web_server()
     asyncio.create_task(keep_alive())
 
-    # 2. Очищаем вебхук перед стартом поллинга
     try:
         await bot.delete_webhook(drop_pending_updates=True)
         print("Webhook successfully deleted")
     except Exception as e:
         print(f"Error deleting webhook: {e}")
 
-    # 3. Устанавливаем меню команд
     await bot.set_my_commands([
         BotCommand(command="start", description="Начать сначала / Новая сказка")
     ])
 
-    # 4. Запускаем поллинг
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
