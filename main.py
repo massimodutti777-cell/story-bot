@@ -14,9 +14,6 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemo
 import openai
 import replicate
 from weasyprint import HTML
-import os
-from aiohttp import web
-
 
 # --- КЛЮЧИ (безопасно считываются из переменных окружения Render) ---
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
@@ -153,34 +150,42 @@ async def generate_full_book(name: str, theme: str):
                      "prompt": f"a cute child named {name} in a fairytale adventure, pixar style"} for i in range(1, 11)]
         return fallback, str(e)
 
+def _run_replicate_flux(prompt: str):
+    output = replicate.run(
+        "black-forest-labs/flux-schnell",
+        input={
+            "prompt": f"A 3D Pixar style children's book illustration of a cute child named protagonist, {prompt}, magical bright colors, high quality",
+            "num_inference_steps": 4,
+            "aspect_ratio": "1:1"
+        }
+    )
+    res = output[0] if isinstance(output, list) else output
+    return str(res)
+
+def _run_replicate_sdxl(prompt: str):
+    output = replicate.run(
+        "bytedance/sdxl-lightning-4step:558fe9d4c646c732771168c8d388614c56e30681b613017575218d6138d62681",
+        input={
+            "prompt": f"Pixar style 3D illustration, {prompt}, fairytale, vibrant colors",
+            "width": 1024,
+            "height": 1024
+        }
+    )
+    res = output[0] if isinstance(output, list) else output
+    return str(res)
+
 async def generate_image(face_image_url: str, prompt: str):
     try:
-        # Используем актуальную и быстро работающую модель FLUX.1
-        output = replicate.run(
-            "black-forest-labs/flux-schnell",
-            input={
-                "prompt": f"A 3D Pixar style children's book illustration of a cute child named protagonist, {prompt}, magical bright colors, high quality",
-                "num_inference_steps": 4,
-                "aspect_ratio": "1:1"
-            }
-        )
-        res_url = output[0] if isinstance(output, list) else output
+        # Выполняем синхронный вызов Replicate в фоновом потоке
+        res_url = await asyncio.to_thread(_run_replicate_flux, prompt)
         return res_url, None
     except Exception as e:
-        print(f"Ошибка Replicate: {e}")
-        # Резервный вызов SDXL Lightning
+        print(f"Ошибка Replicate (Flux): {e}")
         try:
-            output = replicate.run(
-                "bytedance/sdxl-lightning-4step:558fe9d4c646c732771168c8d388614c56e30681b613017575218d6138d62681",
-                input={
-                    "prompt": f"Pixar style 3D illustration, {prompt}, fairytale, vibrant colors",
-                    "width": 1024,
-                    "height": 1024
-                }
-            )
-            res_url = output[0] if isinstance(output, list) else output
+            res_url = await asyncio.to_thread(_run_replicate_sdxl, prompt)
             return res_url, None
         except Exception as fallback_err:
+            print(f"Ошибка Replicate (SDXL): {fallback_err}")
             return None, str(e)
 
 async def build_pdf_book_html(name: str, theme: str, book_data: list):
@@ -304,6 +309,7 @@ async def build_pdf_book_html(name: str, theme: str, book_data: list):
         print(f"Ошибка генерации HTML-PDF: {e}")
         return None
 
+# --- Настройки HTTP-сервера и пинга для Render ---
 async def handle_health_check(request):
     return web.Response(text="Book Bot is running!")
 
@@ -328,44 +334,12 @@ async def keep_alive():
 
 async def main():
     logging.basicConfig(level=logging.INFO)
+    
+    # 1. Запуск фейкового веб-сервера и фонового пинга
     await start_web_server()
     asyncio.create_task(keep_alive())
-    
-async def main():
-    # 1. Принудительно очищаем вебхук перед запуском
-    try:
-        await bot.delete_webhook(drop_pending_updates=True)
-        print("Webhook successfully deleted")
-    except Exception as e:
-        print(f"Error deleting webhook: {e}")
 
-    # 2. Устанавливаем меню команд
-    await bot.set_my_commands([
-        BotCommand(command="start", description="Начать сначала / Новая сказка")
-    ])
-
-    # 3. Запускаем поллинг
-    await dp.start_polling(bot)
-
-# --- Блок поддержки порта для Render ---
-async def handle_health_check(request):
-    return web.Response(text="Bot is alive!")
-
-async def start_dummy_server():
-    app = web.Application()
-    app.router.add_get("/", handle_health_check)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    port = int(os.environ.get("PORT", 8080))
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
-
-# --- Главная функция запуска бота ---
-async def main():
-    # 1. Запускаем фоновый веб-сервер, чтобы Render видел открытый порт
-    await start_dummy_server()
-    
-    # 2. Сбрасываем вебхук перед стартом поллинга
+    # 2. Очищаем вебхук перед стартом поллинга
     try:
         await bot.delete_webhook(drop_pending_updates=True)
         print("Webhook successfully deleted")
@@ -381,6 +355,4 @@ async def main():
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    import asyncio
     asyncio.run(main())
-
