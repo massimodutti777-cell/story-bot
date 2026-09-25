@@ -16,7 +16,7 @@ import openai
 import replicate
 from weasyprint import HTML
 
-# --- КЛЮЧИ ---
+# --- КЛЮЧИ (безопасно считываются из переменных окружения Render) ---
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 REPLICATE_API_TOKEN = os.environ.get("REPLICATE_API_TOKEN")
@@ -29,6 +29,7 @@ if REPLICATE_API_TOKEN:
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
+# Состояния диалога
 class StoryForm(StatesGroup):
     waiting_for_name = State()
     waiting_for_theme = State()
@@ -141,7 +142,7 @@ async def generate_full_book(name: str, theme: str):
         Ответь СТРОГО в формате JSON-массива из 10 объектов без лишнего текста.
         Каждый объект должен содержать:
         - "text": текст страницы (2-4 предложения).
-        - "prompt": подробное описание сцены на английском языке, в котором ОБЯЗАТЕЛЬНО присутствует "a cute child protagonist named {name}".
+        - "prompt": описание сцены на английском языке, в котором ОБЯЗАТЕЛЬНО присутствует "a cute child protagonist named {name}".
         """
         response = await client.chat.completions.create(
             model="gpt-4o-mini",
@@ -158,43 +159,55 @@ async def generate_full_book(name: str, theme: str):
                      "prompt": f"a cute young child protagonist named {name} in a fairytale adventure, 3d pixar character style"} for i in range(1, 11)]
         return fallback, str(e)
 
-def _run_replicate_flux(prompt: str, face_url: str, name: str):
-    full_prompt = f"3D Pixar animation style illustration, a cute young child protagonist named {name} inspired by human face features, {prompt}, highly detailed, vibrant bright colors, clear focus, cheerful atmosphere, 8k resolution"
+def _run_replicate_photomaker(prompt: str, face_url: str, name: str):
+    full_prompt = f"a cute young child protagonist named {name} img, 3D Pixar animation style, {prompt}, highly detailed, bright sunny lighting, vibrant colors, 8k resolution, clear sharp focus"
     
-    input_params = {
-        "prompt": full_prompt,
-        "num_inference_steps": 4,
-        "aspect_ratio": "1:1"
-    }
-    
-    # Если передано фото, отдаем его модели в качестве ориентира
+    # Попытка 1: Использование специализированной модели переноса лица PhotoMaker
     if face_url:
-        input_params["image"] = face_url
+        try:
+            output = replicate.run(
+                "tencentarc/photomaker:dd222f98a4f221055f1b68ed0b28d011f010323386e81f1816e04812a4dfc0be",
+                input={
+                    "prompt": full_prompt,
+                    "input_images": [face_url],
+                    "num_steps": 20,
+                    "style_name": "Disney Charactor"
+                }
+            )
+            res = output[0] if isinstance(output, list) else output
+            return str(res)
+        except Exception as pm_err:
+            print(f"PhotoMaker Error, falling back to Flux: {pm_err}")
 
+    # Попытка 2: Четкий FLUX без конфликтующих параметров
     output = replicate.run(
         "black-forest-labs/flux-schnell",
-        input=input_params
+        input={
+            "prompt": f"A 3D Pixar style character illustration of a cute young boy named {name}, {prompt}, magical bright sunny lighting, sharp focus, 8k, masterpiece",
+            "num_inference_steps": 4,
+            "aspect_ratio": "1:1"
+        }
     )
     res = output[0] if isinstance(output, list) else output
     return str(res)
 
 async def generate_image(face_image_url: str, prompt: str, name: str = "child"):
-    # 1. Попытка через Replicate с увеличнным таймаутом 35 секунд для четких картинок
+    # Попытка через Replicate с запасом времени в 45 секунд
     try:
         res_url = await asyncio.wait_for(
-            asyncio.to_thread(_run_replicate_flux, prompt, face_image_url, name),
-            timeout=35.0
+            asyncio.to_thread(_run_replicate_photomaker, prompt, face_image_url, name),
+            timeout=45.0
         )
         if res_url:
             return res_url, None
     except Exception as e:
-        print(f"Replicate generation skipped or failed: {e}")
+        print(f"Replicate Error/Timeout: {e}")
 
-    # 2. Высококачественный фолбэк с обязательным ребенком в кадре
+    # Фолбэк на Pollinations только в крайнем случае
     try:
-        styled_prompt = f"3D Pixar style children book illustration, cute young child protagonist named {name}, {prompt}, fairytale, bright sunny lighting, highly detailed"
+        styled_prompt = f"3D Pixar style children book illustration, cute young child protagonist named {name}, {prompt}, fairytale, bright sunny lighting, sharp focus"
         encoded = urllib.parse.quote(styled_prompt)
-        fallback_url = f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&nologo=true"
+        fallback_url = f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&seed={urllib.parse.quote(prompt)}&nologo=true"
         return fallback_url, None
     except Exception as fallback_err:
         return None, str(fallback_err)
