@@ -89,15 +89,21 @@ async def process_photo(message: types.Message, state: FSMContext):
         story_text = page.get("text", "")
         img_prompt = page.get("prompt", "")
 
-        image_url, img_err = await generate_image(photo_url, img_prompt)
-        if img_err and idx == 1:
-            await message.answer(f"Предупреждение Replicate (используется резервная генерация):\n`{img_err}`", parse_mode="Markdown")
+        try:
+            image_url, img_err = await generate_image(photo_url, img_prompt)
+        except Exception as e:
+            print(f"Error generating image on page {idx}: {e}")
+            image_url = None
 
         header = f"Страница {idx}/10\n\n{story_text}"
         
-        if image_url:
-            await message.answer_photo(photo=image_url, caption=header)
-        else:
+        try:
+            if image_url:
+                await message.answer_photo(photo=image_url, caption=header)
+            else:
+                await message.answer(header)
+        except Exception as send_err:
+            print(f"Error sending photo on page {idx}: {send_err}")
             await message.answer(header)
             
         generated_book_data.append({
@@ -106,7 +112,7 @@ async def process_photo(message: types.Message, state: FSMContext):
             "image_url": image_url
         })
         
-        await asyncio.sleep(1)
+        await asyncio.sleep(0.5)
 
     await message.answer("Верстаем вашу красочную PDF-книгу...")
 
@@ -164,17 +170,20 @@ def _run_replicate_flux(prompt: str):
     return str(res)
 
 async def generate_image(face_image_url: str, prompt: str):
-    # Попытка 1: Replicate
+    # 1. Пробуем Replicate с ограничением по времени в 10 секунд
     try:
-        res_url = await asyncio.to_thread(_run_replicate_flux, prompt)
+        res_url = await asyncio.wait_for(
+            asyncio.to_thread(_run_replicate_flux, prompt),
+            timeout=10.0
+        )
         if res_url:
             return res_url, None
     except Exception as e:
-        print(f"Ошибка Replicate: {e}")
+        print(f"Replicate skipped or timed out: {e}")
 
-    # Попытка 2: Гарантированная резервная генерация через Pollinations AI
+    # 2. Быстрый и гарантированный фолбэк через Pollinations AI
     try:
-        styled_prompt = f"3D Pixar style children book illustration, {prompt}, vibrant fairytale colors"
+        styled_prompt = f"3D Pixar style children book illustration, {prompt}, fairytale, vibrant colors"
         encoded = urllib.parse.quote(styled_prompt)
         fallback_url = f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&nologo=true"
         return fallback_url, None
@@ -183,7 +192,7 @@ async def generate_image(face_image_url: str, prompt: str):
 
 async def build_pdf_book_html(name: str, theme: str, book_data: list):
     try:
-        # Генерируем красивую фоновую обложку в тему сказки
+        # Обложка по теме сказки
         cover_bg, _ = await generate_image("", f"magical cover art for children book about {theme}, vibrant colors, pixar style 3d")
         cover_bg_style = f"background-image: url('{cover_bg}'); background-size: cover; background-position: center;" if cover_bg else "background: linear-gradient(135deg, #2b1055 0%, #7597de 100%);"
 
