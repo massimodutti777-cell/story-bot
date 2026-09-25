@@ -16,7 +16,7 @@ import openai
 import replicate
 from weasyprint import HTML
 
-# --- КЛЮЧИ (безопасно считываются из переменных окружения Render) ---
+# --- КЛЮЧИ ---
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 REPLICATE_API_TOKEN = os.environ.get("REPLICATE_API_TOKEN")
@@ -29,7 +29,6 @@ if REPLICATE_API_TOKEN:
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# Состояния диалога
 class StoryForm(StatesGroup):
     waiting_for_name = State()
     waiting_for_theme = State()
@@ -90,7 +89,7 @@ async def process_photo(message: types.Message, state: FSMContext):
         img_prompt = page.get("prompt", "")
 
         try:
-            image_url, img_err = await generate_image(photo_url, img_prompt)
+            image_url, img_err = await generate_image(photo_url, img_prompt, child_name)
         except Exception as e:
             print(f"Error generating image on page {idx}: {e}")
             image_url = None
@@ -116,7 +115,7 @@ async def process_photo(message: types.Message, state: FSMContext):
 
     await message.answer("Верстаем вашу красочную PDF-книгу...")
 
-    pdf_bytes = await build_pdf_book_html(child_name, story_theme, generated_book_data)
+    pdf_bytes = await build_pdf_book_html(child_name, story_theme, generated_book_data, photo_url)
     
     if pdf_bytes:
         document = BufferedInputFile(pdf_bytes, filename=f"Сказка_{child_name}.pdf")
@@ -137,10 +136,12 @@ async def generate_full_book(name: str, theme: str):
         Создай детскую сказку из 10 страниц про ребенка по имени {name}.
         Сюжет сказки: {theme}.
         
+        ОБЯЗАТЕЛЬНОЕ УСЛОВИЕ: Ребенок {name} должен быть главным действующим лицом КАЖДОЙ страницы и присутствовать на КАЖДОЙ иллюстрации!
+        
         Ответь СТРОГО в формате JSON-массива из 10 объектов без лишнего текста.
         Каждый объект должен содержать:
         - "text": текст страницы (2-4 предложения).
-        - "prompt": описание сцены на английском языке в стиле 3D Pixar img.
+        - "prompt": подробное описание сцены на английском языке, в котором ОБЯЗАТЕЛЬНО присутствует "a cute child protagonist named {name}".
         """
         response = await client.chat.completions.create(
             model="gpt-4o-mini",
@@ -154,46 +155,54 @@ async def generate_full_book(name: str, theme: str):
     except Exception as e:
         print(f"Ошибка книги OpenAI: {e}")
         fallback = [{"text": f"Страница {i}: {name} продолжал свое приключение по сюжету '{theme}'!", 
-                     "prompt": f"a cute child named {name} in a fairytale adventure, pixar style"} for i in range(1, 11)]
+                     "prompt": f"a cute young child protagonist named {name} in a fairytale adventure, 3d pixar character style"} for i in range(1, 11)]
         return fallback, str(e)
 
-def _run_replicate_flux(prompt: str):
+def _run_replicate_flux(prompt: str, face_url: str, name: str):
+    full_prompt = f"3D Pixar animation style illustration, a cute young child protagonist named {name} inspired by human face features, {prompt}, highly detailed, vibrant bright colors, clear focus, cheerful atmosphere, 8k resolution"
+    
+    input_params = {
+        "prompt": full_prompt,
+        "num_inference_steps": 4,
+        "aspect_ratio": "1:1"
+    }
+    
+    # Если передано фото, отдаем его модели в качестве ориентира
+    if face_url:
+        input_params["image"] = face_url
+
     output = replicate.run(
         "black-forest-labs/flux-schnell",
-        input={
-            "prompt": f"A 3D Pixar style children's book illustration, {prompt}, magical bright colors, high quality, 8k",
-            "num_inference_steps": 4,
-            "aspect_ratio": "1:1"
-        }
+        input=input_params
     )
     res = output[0] if isinstance(output, list) else output
     return str(res)
 
-async def generate_image(face_image_url: str, prompt: str):
-    # 1. Пробуем Replicate с ограничением по времени в 10 секунд
+async def generate_image(face_image_url: str, prompt: str, name: str = "child"):
+    # 1. Попытка через Replicate с увеличнным таймаутом 35 секунд для четких картинок
     try:
         res_url = await asyncio.wait_for(
-            asyncio.to_thread(_run_replicate_flux, prompt),
-            timeout=10.0
+            asyncio.to_thread(_run_replicate_flux, prompt, face_image_url, name),
+            timeout=35.0
         )
         if res_url:
             return res_url, None
     except Exception as e:
-        print(f"Replicate skipped or timed out: {e}")
+        print(f"Replicate generation skipped or failed: {e}")
 
-    # 2. Быстрый и гарантированный фолбэк через Pollinations AI
+    # 2. Высококачественный фолбэк с обязательным ребенком в кадре
     try:
-        styled_prompt = f"3D Pixar style children book illustration, {prompt}, fairytale, vibrant colors"
+        styled_prompt = f"3D Pixar style children book illustration, cute young child protagonist named {name}, {prompt}, fairytale, bright sunny lighting, highly detailed"
         encoded = urllib.parse.quote(styled_prompt)
         fallback_url = f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&nologo=true"
         return fallback_url, None
     except Exception as fallback_err:
         return None, str(fallback_err)
 
-async def build_pdf_book_html(name: str, theme: str, book_data: list):
+async def build_pdf_book_html(name: str, theme: str, book_data: list, face_url: str):
     try:
-        # Обложка по теме сказки
-        cover_bg, _ = await generate_image("", f"magical cover art for children book about {theme}, vibrant colors, pixar style 3d")
+        # Обложка по теме
+        cover_bg, _ = await generate_image(face_url, f"magical cover art for children book with cute child protagonist named {name} exploring {theme}, vibrant bright fairytale colors", name)
         cover_bg_style = f"background-image: url('{cover_bg}'); background-size: cover; background-position: center;" if cover_bg else "background: linear-gradient(135deg, #2b1055 0%, #7597de 100%);"
 
         html_content = f"""
@@ -225,7 +234,7 @@ async def build_pdf_book_html(name: str, theme: str, book_data: list):
                 .cover-overlay {{
                     position: absolute;
                     inset: 0;
-                    background: linear-gradient(to bottom, rgba(0,0,0,0.2) 0%, rgba(15,12,27,0.85) 100%);
+                    background: linear-gradient(to bottom, rgba(0,0,0,0.1) 0%, rgba(15,12,27,0.85) 100%);
                     display: flex;
                     flex-direction: column;
                     justify-content: flex-end;
