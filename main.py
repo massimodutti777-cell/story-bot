@@ -3,6 +3,7 @@ import logging
 import os
 import json
 import io
+import urllib.parse
 import aiohttp
 from aiohttp import web
 from aiogram import Bot, Dispatcher, F, types
@@ -90,7 +91,7 @@ async def process_photo(message: types.Message, state: FSMContext):
 
         image_url, img_err = await generate_image(photo_url, img_prompt)
         if img_err and idx == 1:
-            await message.answer(f"Ошибка Replicate:\n`{img_err}`", parse_mode="Markdown")
+            await message.answer(f"Предупреждение Replicate (используется резервная генерация):\n`{img_err}`", parse_mode="Markdown")
 
         header = f"Страница {idx}/10\n\n{story_text}"
         
@@ -154,7 +155,7 @@ def _run_replicate_flux(prompt: str):
     output = replicate.run(
         "black-forest-labs/flux-schnell",
         input={
-            "prompt": f"A 3D Pixar style children's book illustration of a cute child named protagonist, {prompt}, magical bright colors, high quality",
+            "prompt": f"A 3D Pixar style children's book illustration, {prompt}, magical bright colors, high quality, 8k",
             "num_inference_steps": 4,
             "aspect_ratio": "1:1"
         }
@@ -162,34 +163,30 @@ def _run_replicate_flux(prompt: str):
     res = output[0] if isinstance(output, list) else output
     return str(res)
 
-def _run_replicate_sdxl(prompt: str):
-    output = replicate.run(
-        "bytedance/sdxl-lightning-4step:558fe9d4c646c732771168c8d388614c56e30681b613017575218d6138d62681",
-        input={
-            "prompt": f"Pixar style 3D illustration, {prompt}, fairytale, vibrant colors",
-            "width": 1024,
-            "height": 1024
-        }
-    )
-    res = output[0] if isinstance(output, list) else output
-    return str(res)
-
 async def generate_image(face_image_url: str, prompt: str):
+    # Попытка 1: Replicate
     try:
-        # Выполняем синхронный вызов Replicate в фоновом потоке
         res_url = await asyncio.to_thread(_run_replicate_flux, prompt)
-        return res_url, None
-    except Exception as e:
-        print(f"Ошибка Replicate (Flux): {e}")
-        try:
-            res_url = await asyncio.to_thread(_run_replicate_sdxl, prompt)
+        if res_url:
             return res_url, None
-        except Exception as fallback_err:
-            print(f"Ошибка Replicate (SDXL): {fallback_err}")
-            return None, str(e)
+    except Exception as e:
+        print(f"Ошибка Replicate: {e}")
+
+    # Попытка 2: Гарантированная резервная генерация через Pollinations AI
+    try:
+        styled_prompt = f"3D Pixar style children book illustration, {prompt}, vibrant fairytale colors"
+        encoded = urllib.parse.quote(styled_prompt)
+        fallback_url = f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&nologo=true"
+        return fallback_url, None
+    except Exception as fallback_err:
+        return None, str(fallback_err)
 
 async def build_pdf_book_html(name: str, theme: str, book_data: list):
     try:
+        # Генерируем красивую фоновую обложку в тему сказки
+        cover_bg, _ = await generate_image("", f"magical cover art for children book about {theme}, vibrant colors, pixar style 3d")
+        cover_bg_style = f"background-image: url('{cover_bg}'); background-size: cover; background-position: center;" if cover_bg else "background: linear-gradient(135deg, #2b1055 0%, #7597de 100%);"
+
         html_content = f"""
         <!DOCTYPE html>
         <html>
@@ -199,7 +196,6 @@ async def build_pdf_book_html(name: str, theme: str, book_data: list):
                 @page {{
                     size: A4 portrait;
                     margin: 0;
-                    background-color: #1a102f;
                 }}
                 *, *::before, *::after {{
                     box-sizing: border-box;
@@ -213,29 +209,31 @@ async def build_pdf_book_html(name: str, theme: str, book_data: list):
                 .cover-page {{
                     width: 210mm;
                     height: 297mm;
-                    display: block;
                     position: relative;
-                    background: linear-gradient(135deg, #2b1055 0%, #7597de 100%);
-                    text-align: center;
+                    {cover_bg_style}
                     page-break-after: always;
                 }}
-                .cover-title {{
+                .cover-overlay {{
                     position: absolute;
-                    top: 80mm;
-                    left: 20mm;
-                    right: 20mm;
-                    font-size: 32pt;
+                    inset: 0;
+                    background: linear-gradient(to bottom, rgba(0,0,0,0.2) 0%, rgba(15,12,27,0.85) 100%);
+                    display: flex;
+                    flex-direction: column;
+                    justify-content: flex-end;
+                    padding: 25mm 20mm;
+                    text-align: center;
+                }}
+                .cover-title {{
+                    font-size: 34pt;
                     font-weight: bold;
                     color: #ffe600;
-                    text-shadow: 2px 2px 8px rgba(0,0,0,0.6);
+                    text-shadow: 2px 4px 10px rgba(0,0,0,0.9);
+                    margin-bottom: 5mm;
                 }}
                 .cover-subtitle {{
-                    position: absolute;
-                    top: 130mm;
-                    left: 20mm;
-                    right: 20mm;
-                    font-size: 18pt;
+                    font-size: 20pt;
                     color: #ffffff;
+                    text-shadow: 1px 2px 6px rgba(0,0,0,0.9);
                 }}
                 .story-page {{
                     width: 210mm;
@@ -243,45 +241,47 @@ async def build_pdf_book_html(name: str, theme: str, book_data: list):
                     position: relative;
                     page-break-after: always;
                     background-color: #0f0c1b;
+                    overflow: hidden;
                 }}
-                .page-image {{
+                .full-bg-image {{
                     position: absolute;
-                    top: 15mm;
-                    left: 15mm;
-                    width: 180mm;
-                    height: 180mm;
-                    border-radius: 12px;
+                    top: 0;
+                    left: 0;
+                    width: 210mm;
+                    height: 297mm;
                     object-fit: cover;
-                    box-shadow: 0 8px 20px rgba(0,0,0,0.5);
                 }}
-                .text-box {{
+                .text-overlay {{
                     position: absolute;
-                    top: 205mm;
-                    left: 15mm;
-                    width: 180mm;
-                    height: 75mm;
-                    background: rgba(255, 255, 255, 0.95);
-                    border-radius: 12px;
-                    padding: 8mm 10mm;
-                    color: #1a102f;
+                    bottom: 0;
+                    left: 0;
+                    right: 0;
+                    padding: 25mm 18mm 18mm 18mm;
+                    background: linear-gradient(to top, rgba(15, 12, 27, 0.95) 75%, rgba(15, 12, 27, 0) 100%);
+                    color: #ffffff;
                 }}
                 .page-number {{
                     font-size: 11pt;
                     font-weight: bold;
-                    color: #6b21a8;
+                    color: #ffe600;
                     margin-bottom: 3mm;
+                    text-transform: uppercase;
+                    letter-spacing: 1px;
                 }}
                 .page-text {{
-                    font-size: 13pt;
-                    line-height: 1.5;
-                    color: #241442;
+                    font-size: 14pt;
+                    line-height: 1.6;
+                    color: #ffffff;
+                    text-shadow: 1px 1px 4px rgba(0,0,0,0.9);
                 }}
             </style>
         </head>
         <body>
             <div class="cover-page">
-                <div class="cover-title">Сказка про {name}</div>
-                <div class="cover-subtitle">{theme}</div>
+                <div class="cover-overlay">
+                    <div class="cover-title">Сказка про {name}</div>
+                    <div class="cover-subtitle">{theme}</div>
+                </div>
             </div>
         """
 
@@ -289,8 +289,8 @@ async def build_pdf_book_html(name: str, theme: str, book_data: list):
             img_src = item['image_url'] if item['image_url'] else ""
             html_content += f"""
             <div class="story-page">
-                {"<img class='page-image' src='" + img_src + "'/>" if img_src else ""}
-                <div class="text-box">
+                {"<img class='full-bg-image' src='" + img_src + "'/>" if img_src else ""}
+                <div class="text-overlay">
                     <div class="page-number">Страница {item['page']}</div>
                     <div class="page-text">{item['text']}</div>
                 </div>
