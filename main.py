@@ -69,16 +69,18 @@ def get_eyes_keyboard():
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
     await message.answer(
-        "Привет! Я создаю волшебные иллюстрированные книги для детей.\n\nКак зовут главного героя книги?",
+        "Привет! Я создаю волшебные иллюстрированные книги для детей.\n\n"
+        "Как зовут главного героя книги? **Напишите имя в винительном падеже** (отвечая на вопрос «Про кого?» — например: *Фёдора*, *Алису*, *Мишу*):",
+        parse_mode="Markdown",
         reply_markup=ReplyKeyboardRemove()
     )
     await state.set_state(StoryForm.waiting_for_name)
 
 @dp.message(StoryForm.waiting_for_name)
 async def process_name(message: types.Message, state: FSMContext):
-    await state.update_data(child_name=message.text)
+    await state.update_data(child_name=message.text.strip())
     await message.answer(
-        f"Замечательно! О чем будет сказка про {message.text}?\n\n"
+        f"Замечательно! О чем будет сказка про {message.text.strip()}?\n\n"
         "Напишите сюжет (например: 'Путешествие в космос на динозавре', 'Спасение подводного города', 'Школа магии')."
     )
     await state.set_state(StoryForm.waiting_for_theme)
