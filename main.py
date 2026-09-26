@@ -16,7 +16,7 @@ import openai
 import replicate
 from weasyprint import HTML
 
-# --- КЛЮЧИ ---
+# --- КЛЮЧИ (из переменных окружения Render) ---
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 REPLICATE_API_TOKEN = os.environ.get("REPLICATE_API_TOKEN")
@@ -29,6 +29,7 @@ if REPLICATE_API_TOKEN:
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
+# Состояния диалога
 class StoryForm(StatesGroup):
     waiting_for_name = State()
     waiting_for_theme = State()
@@ -72,7 +73,7 @@ async def process_photo(message: types.Message, state: FSMContext):
     child_name = data['child_name']
     story_theme = data['story_theme']
     
-    await message.answer("Создаю сказку и обрабатываю лицо персонажа... Это займет около 2–3 минут.")
+    await message.answer("Пишу волшебную книгу и генерирую иллюстрации... Это займет около 2–3 минут.")
 
     photo = message.photo[-1]
     file_info = await bot.get_file(photo.file_id)
@@ -88,14 +89,8 @@ async def process_photo(message: types.Message, state: FSMContext):
         story_text = page.get("text", "")
         img_prompt = page.get("prompt", "")
 
-        image_url = None
-        for attempt in range(2):
-            try:
-                image_url, img_err = await generate_image_with_faceswap(photo_url, img_prompt, child_name)
-                if image_url:
-                    break
-            except Exception as e:
-                print(f"Error generating image page {idx}, attempt {attempt}: {e}")
+        # Гарантированная генерация с ретраями
+        image_url = await generate_image_safe(photo_url, img_prompt, child_name)
 
         header = f"Страница {idx}/10\n\n{story_text}"
         
@@ -162,9 +157,9 @@ async def generate_full_book(name: str, theme: str):
         return fallback, str(e)
 
 def _run_replicate_flux_and_swap(face_url: str, prompt: str, name: str):
-    # 1. Генерация качественной сцены без анатомических мутаций (без хвостов у детей)
-    full_prompt = f"3D Pixar style animation screenshot, a cute human child boy named {name}, human body with normal clothes, no tail on human, {prompt}, bright sunny magical lighting, sharp clear focus, 8k render"
+    full_prompt = f"3D Pixar style animation screenshot, a cute human child boy protagonist named {name}, human body with normal clothes, no tail, {prompt}, bright sunny magical lighting, sharp clear focus, 8k render"
     
+    # 1. Генерация качественного кадра
     base_image = replicate.run(
         "black-forest-labs/flux-schnell",
         input={
@@ -175,7 +170,7 @@ def _run_replicate_flux_and_swap(face_url: str, prompt: str, name: str):
     )
     base_url = str(base_image[0] if isinstance(base_image, list) else base_image)
 
-    # 2. Наложение оригинального лица ребенка с фото
+    # 2. Попытка замены лица на оригинальное
     try:
         swapped_image = replicate.run(
             "lucataco/faceswap:9a429854842207b8f5c16b22f082e0e4178a5712f86237dd1d51a6be12cf73d2",
@@ -184,27 +179,47 @@ def _run_replicate_flux_and_swap(face_url: str, prompt: str, name: str):
                 "source_image": face_url
             }
         )
-        res_url = str(swapped_image[0] if isinstance(swapped_image, list) else swapped_image)
-        return res_url
+        return str(swapped_image[0] if isinstance(swapped_image, list) else swapped_image)
     except Exception as swap_err:
-        print(f"FaceSwap failed, using base image: {swap_err}")
+        print(f"FaceSwap failed, using base Flux image: {swap_err}")
         return base_url
 
-async def generate_image_with_faceswap(face_url: str, prompt: str, name: str):
+async def generate_image_safe(face_url: str, prompt: str, name: str) -> str:
+    # Попытка 1: Полноценный запуск через Replicate + FaceSwap
+    for attempt in range(1, 3):
+        try:
+            res_url = await asyncio.wait_for(
+                asyncio.to_thread(_run_replicate_flux_and_swap, face_url, prompt, name),
+                timeout=60.0
+            )
+            if res_url:
+                return res_url
+        except Exception as e:
+            print(f"Attempt {attempt} failed for prompt '{prompt}': {e}")
+            await asyncio.sleep(1)
+
+    # Попытка 2: Только базовый быстрый Flux (гарантирует картинку)
     try:
-        res_url = await asyncio.wait_for(
-            asyncio.to_thread(_run_replicate_flux_and_swap, face_url, prompt, name),
-            timeout=50.0
-        )
-        if res_url:
-            return res_url, None
-    except Exception as e:
-        print(f"Replicate generation error: {e}")
-        return None, str(e)
+        def _run_flux_only():
+            full_prompt = f"3D Pixar style character illustration, cute young boy named {name}, {prompt}, bright sunny lighting, sharp focus, 8k"
+            output = replicate.run(
+                "black-forest-labs/flux-schnell",
+                input={"prompt": full_prompt, "num_inference_steps": 4, "aspect_ratio": "1:1"}
+            )
+            return str(output[0] if isinstance(output, list) else output)
+
+        return await asyncio.to_thread(_run_flux_only)
+    except Exception as flux_err:
+        print(f"Flux fallback error: {flux_err}")
+        return None
 
 async def build_pdf_book_html(name: str, theme: str, book_data: list, face_url: str):
     try:
-        cover_bg, _ = await generate_image_with_faceswap(face_url, f"magical title cover art for children book about {theme}", name)
+        # Генерируем отдельную обложку или берем картинку с 1-й страницы
+        cover_bg = await generate_image_safe(face_url, f"magical cover art for children book about {theme}", name)
+        if not cover_bg and len(book_data) > 0:
+            cover_bg = book_data[0].get("image_url")
+
         cover_bg_style = f"background-image: url('{cover_bg}'); background-size: cover; background-position: center;" if cover_bg else "background: linear-gradient(135deg, #2b1055 0%, #7597de 100%);"
 
         html_content = f"""
@@ -329,6 +344,7 @@ async def build_pdf_book_html(name: str, theme: str, book_data: list, face_url: 
         print(f"Ошибка генерации HTML-PDF: {e}")
         return None
 
+# --- Настройки HTTP-сервера и пинга для Render ---
 async def handle_health_check(request):
     return web.Response(text="Book Bot is running!")
 
