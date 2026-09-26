@@ -29,7 +29,7 @@ if REPLICATE_API_TOKEN:
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# Семафор для предотвращения блокировок Replicate
+# Семафор для предотвращения лимитов Replicate
 replicate_semaphore = asyncio.Semaphore(2)
 
 # FSM Состояния опроса
@@ -37,6 +37,7 @@ class StoryForm(StatesGroup):
     waiting_for_name = State()
     waiting_for_theme = State()
     waiting_for_gender = State()
+    waiting_for_age = State()
     waiting_for_hair = State()
     waiting_for_eyes = State()
     waiting_for_clothes = State()
@@ -92,8 +93,16 @@ async def process_theme(message: types.Message, state: FSMContext):
 async def process_gender(message: types.Message, state: FSMContext):
     await state.update_data(gender=message.text)
     await message.answer(
-        "Опишите цвет и тип волос ребенка (например: 'короткие медные рыжие', 'темные кудрявые'):",
+        "Укажите возраст ребенка (например: '4 года', '6 лет'):",
         reply_markup=ReplyKeyboardRemove()
+    )
+    await state.set_state(StoryForm.waiting_for_age)
+
+@dp.message(StoryForm.waiting_for_age)
+async def process_age(message: types.Message, state: FSMContext):
+    await state.update_data(age=message.text)
+    await message.answer(
+        "Опишите цвет и тип волос ребенка (например: 'короткие медные рыжие', 'темные кудрявые'):"
     )
     await state.set_state(StoryForm.waiting_for_hair)
 
@@ -124,13 +133,14 @@ async def process_photo_and_generate(message: types.Message, state: FSMContext):
     child_name = data['child_name']
     story_theme = data['story_theme']
     gender = data.get('gender', 'Мальчик')
+    age = data.get('age', '5 лет')
     hair_ru = data.get('hair', 'короткие волосы')
     eyes_ru = data.get('eyes', 'карие')
     clothes_ru = data.get('clothes', 'детская одежда')
 
     await message.answer("Перевожу параметры и сочиняю сказку... Это займет около 2–3 минут.")
 
-    appearance_en = await translate_appearance(gender, hair_ru, eyes_ru, clothes_ru, child_name)
+    appearance_en = await translate_appearance(gender, age, hair_ru, eyes_ru, clothes_ru, child_name)
 
     pages, error_msg = await generate_full_book(child_name, story_theme)
     if error_msg:
@@ -148,7 +158,6 @@ async def process_photo_and_generate(message: types.Message, state: FSMContext):
         else:
             final_prompt = f"3D Pixar style landscape cinematic scene illustration without human character, {scene_prompt}, bright fairytale lighting, highly detailed 8k"
 
-        # Надежная генерация с контролем очереди
         image_url = await generate_image_flux_guaranteed(final_prompt)
 
         header = f"Страница {idx}/10\n\n{story_text}"
@@ -186,14 +195,14 @@ async def process_photo_and_generate(message: types.Message, state: FSMContext):
 
     await state.clear()
 
-async def translate_appearance(gender: str, hair: str, eyes: str, clothes: str, name: str) -> str:
+async def translate_appearance(gender: str, age: str, hair: str, eyes: str, clothes: str, name: str) -> str:
     try:
         client = openai.AsyncOpenAI(api_key=OPENAI_API_KEY)
         response = await client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[{
                 "role": "user",
-                "content": f"Translate these Russian child appearance details into a precise English Stable Diffusion prompt: Gender: {gender}, Hair: {hair}, Eyes: {eyes}, Clothes: {clothes}. Format like: 'a cute 5yo boy named {name}, short copper-red hair, brown eyes, red t-shirt and blue pants'."
+                "content": f"Translate these Russian child appearance details into a precise English Stable Diffusion prompt: Gender: {gender}, Age: {age}, Hair: {hair}, Eyes: {eyes}, Clothes: {clothes}. Format like: 'a cute 5-year-old boy named {name}, short copper-red hair, brown eyes, red t-shirt and blue pants'."
             }],
             max_tokens=100
         )
@@ -201,7 +210,7 @@ async def translate_appearance(gender: str, hair: str, eyes: str, clothes: str, 
     except Exception as e:
         print(f"Translation error: {e}")
         gender_en = "boy" if "Мальч" in gender else "girl"
-        return f"a cute young {gender_en} named {name}, short copper red hair, brown eyes, red shirt, blue pants"
+        return f"a cute young 5-year-old {gender_en} named {name}, short copper red hair, brown eyes, red shirt, blue pants"
 
 async def generate_full_book(name: str, theme: str):
     try:
@@ -261,7 +270,6 @@ async def generate_image_flux_guaranteed(full_prompt: str) -> str:
                 print(f"Flux attempt {attempt} error: {e}")
                 await asyncio.sleep(2.0 * attempt)
 
-        # Резервный вызов с уменьшенным количеством шагов
         try:
             res_url = await asyncio.wait_for(
                 asyncio.to_thread(_run_flux, full_prompt, 2),
