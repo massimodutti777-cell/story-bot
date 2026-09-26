@@ -39,7 +39,6 @@ class StoryForm(StatesGroup):
     waiting_for_clothes = State()
     waiting_for_photo = State()
 
-# Клавни
 def get_restart_keyboard():
     return ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(text="Создать новую сказку")]],
@@ -90,7 +89,7 @@ async def process_theme(message: types.Message, state: FSMContext):
 async def process_gender(message: types.Message, state: FSMContext):
     await state.update_data(gender=message.text)
     await message.answer(
-        "Опишите цвет и тип волос ребенка (например: 'короткие темно-каштановые', 'светло-русые кудрявые'):",
+        "Опишите цвет и тип волос ребенка (например: 'короткие медные рыжие', 'темные кудрявые'):",
         reply_markup=ReplyKeyboardRemove()
     )
     await state.set_state(StoryForm.waiting_for_hair)
@@ -105,7 +104,7 @@ async def process_hair(message: types.Message, state: FSMContext):
 async def process_eyes(message: types.Message, state: FSMContext):
     await state.update_data(eyes=message.text)
     await message.answer(
-        "Опишите во что одет персонаж (например: 'красная футболка, синие шорты и белые кроссовки'):",
+        "Опишите во что одет персонаж (например: 'красная футболка, синие штаны'):",
         reply_markup=ReplyKeyboardRemove()
     )
     await state.set_state(StoryForm.waiting_for_clothes)
@@ -113,7 +112,7 @@ async def process_eyes(message: types.Message, state: FSMContext):
 @dp.message(StoryForm.waiting_for_clothes)
 async def process_clothes(message: types.Message, state: FSMContext):
     await state.update_data(clothes=message.text)
-    await message.answer("Отлично! Теперь отправьте фото ребенка (или отправьте любой текст, чтобы пропустить фото).")
+    await message.answer("Отлично! Теперь отправьте фото ребенка (или отправьте любой текст, чтобы пропустить).")
     await state.set_state(StoryForm.waiting_for_photo)
 
 @dp.message(StoryForm.waiting_for_photo)
@@ -122,14 +121,14 @@ async def process_photo_and_generate(message: types.Message, state: FSMContext):
     child_name = data['child_name']
     story_theme = data['story_theme']
     gender = data.get('gender', 'Мальчик')
-    hair = data.get('hair', 'короткие темные волосы')
-    eyes = data.get('eyes', 'карие')
-    clothes = data.get('clothes', 'детская одежда')
+    hair_ru = data.get('hair', 'короткие волосы')
+    eyes_ru = data.get('eyes', 'карие')
+    clothes_ru = data.get('clothes', 'детская одежда')
 
-    gender_en = "boy" if "Мальч" in gender else "girl"
-    appearance_prompt = f"a cute young {gender_en} named {child_name}, {hair} hair, {eyes} eyes, wearing {clothes}, human child body"
+    await message.answer("Перевожу параметры и сочиняю сказку... Это займет около 1–2 минут.")
 
-    await message.answer("Пишу волшебную сказку и генерирую иллюстрации... Это займет около 1–2 минут.")
+    # Автоматический перевод внешности на английский язык через GPT
+    appearance_en = await translate_appearance(gender, hair_ru, eyes_ru, clothes_ru, child_name)
 
     pages, error_msg = await generate_full_book(child_name, story_theme)
     if error_msg:
@@ -139,10 +138,16 @@ async def process_photo_and_generate(message: types.Message, state: FSMContext):
 
     for idx, page in enumerate(pages, 1):
         story_text = page.get("text", "")
-        img_prompt = page.get("prompt", "")
+        scene_prompt = page.get("prompt", "")
+        has_character = page.get("has_character", True)
 
-        # Безопасная генерация с гарантией получения ссылки на фото
-        image_url = await generate_image_flux_guaranteed(img_prompt, child_name, appearance_prompt)
+        # Формируем финальный промпт для Replicate
+        if has_character:
+            final_prompt = f"3D Pixar style character illustration, {appearance_en}, {scene_prompt}, cheerful atmosphere, bright sunny magical lighting, highly detailed 8k"
+        else:
+            final_prompt = f"3D Pixar style landscape cinematic scene illustration without human, {scene_prompt}, bright fairytale lighting, highly detailed 8k"
+
+        image_url = await generate_image_flux_guaranteed(final_prompt)
 
         header = f"Страница {idx}/10\n\n{story_text}"
         
@@ -165,7 +170,7 @@ async def process_photo_and_generate(message: types.Message, state: FSMContext):
 
     await message.answer("Верстаем вашу красочную PDF-книгу...")
 
-    pdf_bytes = await build_pdf_book_html(child_name, story_theme, generated_book_data, appearance_prompt)
+    pdf_bytes = await build_pdf_book_html(child_name, story_theme, generated_book_data, appearance_en)
     
     if pdf_bytes:
         document = BufferedInputFile(pdf_bytes, filename=f"Сказка_{child_name}.pdf")
@@ -179,6 +184,24 @@ async def process_photo_and_generate(message: types.Message, state: FSMContext):
 
     await state.clear()
 
+async def translate_appearance(gender: str, hair: str, eyes: str, clothes: str, name: str) -> str:
+    """Переводит ручной ввод пользователя на английский язык для промпта"""
+    try:
+        client = openai.AsyncOpenAI(api_key=OPENAI_API_KEY)
+        response = await client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{
+                "role": "user",
+                "content": f"Translate these Russian child appearance details into a precise English Stable Diffusion prompt: Gender: {gender}, Hair: {hair}, Eyes: {eyes}, Clothes: {clothes}. Format like: 'a cute 5yo boy named {name}, short copper-red hair, brown eyes, red t-shirt and blue pants'."
+            }],
+            max_tokens=100
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        print(f"Translation error: {e}")
+        gender_en = "boy" if "Мальч" in gender else "girl"
+        return f"a cute young {gender_en} named {name}, short copper red hair, brown eyes, red shirt, blue pants"
+
 async def generate_full_book(name: str, theme: str):
     try:
         client = openai.AsyncOpenAI(api_key=OPENAI_API_KEY)
@@ -186,12 +209,15 @@ async def generate_full_book(name: str, theme: str):
         Создай детскую сказку из 10 страниц про ребенка по имени {name}.
         Сюжет сказки: {theme}.
         
-        ОБЯЗАТЕЛЬНОЕ УСЛОВИЕ: Ребенок {name} должен быть главным действующим лицом КАЖДОЙ страницы!
+        ТРЕБОВАНИЯ К ИЛЛЮСТРАЦИЯМ:
+        - На некоторых страницах должен присутствовать герой.
+        - На некоторых страницах изображай только окружение/предметы по сюжету (например: карту, корабль, волшебный замок, звездное небо).
         
-        Ответь СТРОГО в формате JSON-массива из 10 объектов без лишнего текста.
+        Ответь СТРОГО в формате JSON с ключом "pages", содержащим массив из 10 объектов без лишнего текста.
         Каждый объект должен содержать:
         - "text": текст страницы (2-4 предложения).
-        - "prompt": описание сцены на английском языке (например: "exploring a glowing magical forest with dinosaurs").
+        - "prompt": описание сцены на английском языке.
+        - "has_character": boolean (true - если на картинке должен быть ребенок, false - если страница показывает пейзаж/предметы).
         """
         response = await client.chat.completions.create(
             model="gpt-4o-mini",
@@ -205,12 +231,10 @@ async def generate_full_book(name: str, theme: str):
     except Exception as e:
         print(f"Ошибка книги OpenAI: {e}")
         fallback = [{"text": f"Страница {i}: {name} продолжал свое приключение по сюжету '{theme}'!", 
-                     "prompt": "exploring a fairytale world, 3d pixar style"} for i in range(1, 11)]
+                     "prompt": "fairytale world, 3d pixar style", "has_character": (i % 2 != 0)} for i in range(1, 11)]
         return fallback, str(e)
 
-def _run_flux(prompt: str, name: str, appearance: str, num_steps: int = 4):
-    full_prompt = f"3D Pixar style animation, {appearance}, {prompt}, cheerful atmosphere, bright sunny magical lighting, clear sharp focus, highly detailed 8k render, masterpiece"
-    
+def _run_flux(full_prompt: str, num_steps: int = 4):
     output = replicate.run(
         "black-forest-labs/flux-schnell",
         input={
@@ -222,13 +246,13 @@ def _run_flux(prompt: str, name: str, appearance: str, num_steps: int = 4):
     res = output[0] if isinstance(output, list) else output
     return str(res)
 
-async def generate_image_flux_guaranteed(prompt: str, name: str, appearance: str) -> str:
-    # 1. Попытка основного запроса в Replicate
+async def generate_image_flux_guaranteed(full_prompt: str) -> str:
+    # 1. Попытка основного запроса Flux в Replicate (до 35 сек)
     for attempt in range(1, 3):
         try:
             res_url = await asyncio.wait_for(
-                asyncio.to_thread(_run_flux, prompt, name, appearance, 4),
-                timeout=25.0
+                asyncio.to_thread(_run_flux, full_prompt, 4),
+                timeout=35.0
             )
             if res_url:
                 return res_url
@@ -236,10 +260,10 @@ async def generate_image_flux_guaranteed(prompt: str, name: str, appearance: str
             print(f"Flux attempt {attempt} error: {e}")
             await asyncio.sleep(0.5)
 
-    # 2. Быстрый ультра-фолбэк Replicate с 2 шагами генерации (чтобы точно не пропустить страницу)
+    # 2. Быстрый фолбэк с 2 шагами (гарантия получения картинки без пропусков)
     try:
         res_url = await asyncio.wait_for(
-            asyncio.to_thread(_run_flux, prompt, name, appearance, 2),
+            asyncio.to_thread(_run_flux, full_prompt, 2),
             timeout=15.0
         )
         if res_url:
@@ -251,7 +275,8 @@ async def generate_image_flux_guaranteed(prompt: str, name: str, appearance: str
 
 async def build_pdf_book_html(name: str, theme: str, book_data: list, appearance: str):
     try:
-        cover_bg = await generate_image_flux_guaranteed(f"magical cover art for children book about {theme}", name, appearance)
+        cover_prompt = f"3D Pixar style magical cover art for children book, {appearance}, exploring {theme}, bright fairytale colors"
+        cover_bg = await generate_image_flux_guaranteed(cover_prompt)
         if not cover_bg and len(book_data) > 0:
             cover_bg = book_data[0].get("image_url")
 
