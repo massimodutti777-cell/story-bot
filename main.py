@@ -35,7 +35,7 @@ dp = Dispatcher(storage=MemoryStorage())
 # Семафор для предотвращения лимитов Replicate
 replicate_semaphore = asyncio.Semaphore(2)
 
-# Хранилище сгенерированных книг (для команды /my_books и регенерации страниц)
+# Хранилище сгенерированных книг
 USER_BOOKS = {}
 
 # FSM Состояния опроса
@@ -52,11 +52,13 @@ class StoryForm(StatesGroup):
     waiting_for_photo = State()
 
 # Клавиатуры
-def get_restart_keyboard():
+def get_action_keyboard():
     return ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text="Создать новую сказку")]],
-        resize_keyboard=True,
-        one_time_keyboard=True
+        keyboard=[
+            [KeyboardButton(text="📄 Собрать PDF-книгу")],
+            [KeyboardButton(text="Создать новую сказку")]
+        ],
+        resize_keyboard=True
     )
 
 def get_style_keyboard():
@@ -107,13 +109,13 @@ async def cmd_my_books(message: types.Message):
     user_id = message.from_user.id
     if user_id in USER_BOOKS and USER_BOOKS[user_id]:
         book_info = USER_BOOKS[user_id]
-        pdf_bytes = book_info.get('pdf_bytes')
-        child_name = book_info.get('child_name', 'книга')
-        if pdf_bytes:
-            document = BufferedInputFile(pdf_bytes, filename=f"Сказка_{child_name}.pdf")
-            await message.answer_document(document=document, caption=f"Ваша последняя книга про {child_name}!")
-            return
-    await message.answer("У вас пока нет сохраненных книг. Нажмите 'Создать новую сказку'!", reply_markup=get_restart_keyboard())
+        child_name = book_info.get('child_name', 'героя')
+        await message.answer(
+            f"Ваша сказка про {child_name} готова к сборке или скачиванию!",
+            reply_markup=get_action_keyboard()
+        )
+        return
+    await message.answer("У вас пока нет активных или сохраненных книг. Нажмите 'Создать новую сказку'!", reply_markup=get_action_keyboard())
 
 @dp.message(StoryForm.waiting_for_name)
 async def process_name(message: types.Message, state: FSMContext):
@@ -213,14 +215,11 @@ async def process_photo_and_generate(message: types.Message, state: FSMContext):
         await message.answer(f"Ошибка OpenAI:\n`{error_msg}`", parse_mode="Markdown")
 
     generated_book_data = []
-    full_story_text_for_audio = ""
 
     for idx, page in enumerate(pages, 1):
         story_text = page.get("text", "")
         scene_prompt = page.get("prompt", "")
         has_character = page.get("has_character", True)
-
-        full_story_text_for_audio += f"Страница {idx}. {story_text}\n\n"
 
         if has_character:
             final_prompt = f"{style_prompt_en}, {appearance_en}, {scene_prompt}, cheerful fairytale atmosphere, bright sunny magical lighting, highly detailed 8k"
@@ -255,37 +254,53 @@ async def process_photo_and_generate(message: types.Message, state: FSMContext):
         
         await asyncio.sleep(1.2)
 
-    # Сохраняем историю пользователя в глобальное хранилище
+    # Сохраняем состояние книги пользователя без генерации PDF
     USER_BOOKS[message.from_user.id] = {
         "child_name": child_name,
         "story_theme": story_theme,
         "appearance_en": appearance_en,
         "style_prompt_en": style_prompt_en,
-        "book_data": generated_book_data,
-        "pdf_bytes": None
+        "book_data": generated_book_data
     }
 
-    await message.answer("Озвучиваем аудиоверсию сказки...")
-    audio_bytes = await generate_audio_story(full_story_text_for_audio)
-    if audio_bytes:
-        audio_file = BufferedInputFile(audio_bytes, filename=f"Аудиосказка_{child_name}.mp3")
-        await message.answer_audio(audio=audio_file, caption=f"🎧 Аудиокнига про {child_name}")
+    await message.answer(
+        "✨ Все 10 страниц созданы!\n\n"
+        "Вы можете просмотреть иллюстрации выше. Если какая-то картинка вам не понравилась, нажмите кнопку **«🔄 Перерисовать страницу»** под ней.\n\n"
+        "Когда всё будет идеально, нажмите кнопку ниже **«📄 Собрать PDF-книгу»**, чтобы получить финальный документ!",
+        parse_mode="Markdown",
+        reply_markup=get_action_keyboard()
+    )
 
-    await message.answer("Верстаем вашу красочную PDF-книгу...")
-    pdf_bytes = await build_pdf_book_html(child_name, story_theme, generated_book_data, appearance_en, style_prompt_en)
+    await state.clear()
+
+# Ручное создание PDF по кнопке
+@dp.message(F.text == "📄 Собрать PDF-книгу")
+async def process_build_pdf(message: types.Message):
+    user_id = message.from_user.id
+    if user_id not in USER_BOOKS or not USER_BOOKS[user_id]:
+        await message.answer("У вас нет активной книги для сборки. Создайте новую!", reply_markup=get_action_keyboard())
+        return
+
+    book_info = USER_BOOKS[user_id]
+    child_name = book_info["child_name"]
+    story_theme = book_info["story_theme"]
+    book_data = book_info["book_data"]
+    appearance_en = book_info["appearance_en"]
+    style_prompt_en = book_info["style_prompt_en"]
+
+    await message.answer("Верстаем ваш финальный PDF-файл со всеми обновленными картинками...")
+
+    pdf_bytes = await build_pdf_book_html(child_name, story_theme, book_data, appearance_en, style_prompt_en)
     
     if pdf_bytes:
-        USER_BOOKS[message.from_user.id]["pdf_bytes"] = pdf_bytes
         document = BufferedInputFile(pdf_bytes, filename=f"Сказка_{child_name}.pdf")
         await message.answer_document(
             document=document, 
-            caption=f"Ваша иллюстрированная книга про {child_name} готова!",
-            reply_markup=get_restart_keyboard()
+            caption=f"Ваша идеальная иллюстрированная книга про {child_name} готова!",
+            reply_markup=get_action_keyboard()
         )
     else:
-        await message.answer("Не удалось собрать PDF, но вы можете прочитать сказку выше!", reply_markup=get_restart_keyboard())
-
-    await state.clear()
+        await message.answer("Не удалось собрать PDF, но вы можете прочитать сказку выше!", reply_markup=get_action_keyboard())
 
 # Обработка нажатия кнопки "Перерисовать страницу"
 @dp.callback_query(F.data.startswith("redraw_"))
@@ -318,28 +333,6 @@ async def callback_redraw_page(callback: types.CallbackQuery):
             )
         except Exception as e:
             print(f"Edit media failed: {e}")
-            
-        # Обновляем сохраненный PDF
-        pdf_bytes = await build_pdf_book_html(
-            book_info["child_name"], book_info["story_theme"], book_data, 
-            book_info["appearance_en"], book_info["style_prompt_en"]
-        )
-        if pdf_bytes:
-            USER_BOOKS[user_id]["pdf_bytes"] = pdf_bytes
-
-async def generate_audio_story(text: str) -> bytes:
-    """Генерация аудиофайла через OpenAI TTS"""
-    try:
-        client = openai.AsyncOpenAI(api_key=OPENAI_API_KEY)
-        response = await client.audio.speech.create(
-            model="tts-1",
-            voice="alloy",
-            input=text
-        )
-        return response.content
-    except Exception as e:
-        print(f"TTS Error: {e}")
-        return None
 
 async def translate_appearance_and_style(gender: str, age: str, hair: str, eyes: str, clothes: str, companion: str, art_style: str, name: str):
     try:
@@ -599,7 +592,7 @@ async def main():
 
     await bot.set_my_commands([
         BotCommand(command="start", description="Начать сначала / Новая сказка"),
-        BotCommand(command="my_books", description="Мои книги / Скачать повторно")
+        BotCommand(command="my_books", description="Мои книги / Собрать PDF")
     ])
 
     await dp.start_polling(bot)
