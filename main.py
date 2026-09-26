@@ -29,15 +29,44 @@ if REPLICATE_API_TOKEN:
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# Состояния диалога
+# FSM Состояния опроса
 class StoryForm(StatesGroup):
     waiting_for_name = State()
     waiting_for_theme = State()
+    waiting_for_gender = State()
+    waiting_for_hair = State()
+    waiting_for_eyes = State()
+    waiting_for_clothes = State()
     waiting_for_photo = State()
 
+# Клавни
 def get_restart_keyboard():
     return ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(text="Создать новую сказку")]],
+        resize_keyboard=True,
+        one_time_keyboard=True
+    )
+
+def get_gender_keyboard():
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="Мальчик"), KeyboardButton(text="Девочка")]],
+        resize_keyboard=True,
+        one_time_keyboard=True
+    )
+
+def get_hair_keyboard():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="Короткие темные"), KeyboardButton(text="Короткие русые")],
+            [KeyboardButton(text="Светлые/Блондин"), KeyboardButton(text="Кудрявые темные")]
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=True
+    )
+
+def get_eyes_keyboard():
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="Карие"), KeyboardButton(text="Голубые"), KeyboardButton(text="Зеленые")]],
         resize_keyboard=True,
         one_time_keyboard=True
     )
@@ -64,20 +93,51 @@ async def process_name(message: types.Message, state: FSMContext):
 @dp.message(StoryForm.waiting_for_theme)
 async def process_theme(message: types.Message, state: FSMContext):
     await state.update_data(story_theme=message.text)
-    await message.answer("Отлично! Теперь отправьте четкое фото ребенка — я использую его для создания персонажа.")
+    await message.answer("Выберите пол ребенка:", reply_markup=get_gender_keyboard())
+    await state.set_state(StoryForm.waiting_for_gender)
+
+@dp.message(StoryForm.waiting_for_gender)
+async def process_gender(message: types.Message, state: FSMContext):
+    await state.update_data(gender=message.text)
+    await message.answer("Выберите прическу и цвет волос:", reply_markup=get_hair_keyboard())
+    await state.set_state(StoryForm.waiting_for_hair)
+
+@dp.message(StoryForm.waiting_for_hair)
+async def process_hair(message: types.Message, state: FSMContext):
+    await state.update_data(hair=message.text)
+    await message.answer("Выберите цвет глаз:", reply_markup=get_eyes_keyboard())
+    await state.set_state(StoryForm.waiting_for_eyes)
+
+@dp.message(StoryForm.waiting_for_eyes)
+async def process_eyes(message: types.Message, state: FSMContext):
+    await state.update_data(eyes=message.text)
+    await message.answer(
+        "Опишите во что одет персонаж (например: 'красная футболка, синие шорты и белые кроссовки'):",
+        reply_markup=ReplyKeyboardRemove()
+    )
+    await state.set_state(StoryForm.waiting_for_clothes)
+
+@dp.message(StoryForm.waiting_for_clothes)
+async def process_clothes(message: types.Message, state: FSMContext):
+    await state.update_data(clothes=message.text)
+    await message.answer("Отлично! Теперь отправьте фото ребенка (или отправьте любой текст, чтобы пропустить фото).")
     await state.set_state(StoryForm.waiting_for_photo)
 
-@dp.message(StoryForm.waiting_for_photo, F.photo)
-async def process_photo(message: types.Message, state: FSMContext):
+@dp.message(StoryForm.waiting_for_photo)
+async def process_photo_and_generate(message: types.Message, state: FSMContext):
     data = await state.get_data()
     child_name = data['child_name']
     story_theme = data['story_theme']
-    
-    await message.answer("Пишу волшебную книгу и генерирую иллюстрации... Это займет около 2–3 минут.")
+    gender = data.get('gender', 'Мальчик')
+    hair = data.get('hair', 'темные короткие волосы')
+    eyes = data.get('eyes', 'карие')
+    clothes = data.get('clothes', 'удобная детская одежда')
 
-    photo = message.photo[-1]
-    file_info = await bot.get_file(photo.file_id)
-    photo_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_info.file_path}"
+    # Формируем точное текстовое описание внешности
+    gender_en = "boy" if "Мальч" in gender else "girl"
+    appearance_prompt = f"a cute young {gender_en} named {child_name}, {hair} hair, {eyes} eyes, wearing {clothes}, human child body"
+
+    await message.answer("Пишу волшебную книгу и генерирую иллюстрации... Это займет около 1–2 минут.")
 
     pages, error_msg = await generate_full_book(child_name, story_theme)
     if error_msg:
@@ -89,8 +149,8 @@ async def process_photo(message: types.Message, state: FSMContext):
         story_text = page.get("text", "")
         img_prompt = page.get("prompt", "")
 
-        # Гарантированная генерация с ретраями
-        image_url = await generate_image_safe(photo_url, img_prompt, child_name)
+        # Безопасная генерация Flux с фиксированным описанием внешности
+        image_url = await generate_image_flux(img_prompt, child_name, appearance_prompt)
 
         header = f"Страница {idx}/10\n\n{story_text}"
         
@@ -109,11 +169,11 @@ async def process_photo(message: types.Message, state: FSMContext):
             "image_url": image_url
         })
         
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(0.3)
 
     await message.answer("Верстаем вашу красочную PDF-книгу...")
 
-    pdf_bytes = await build_pdf_book_html(child_name, story_theme, generated_book_data, photo_url)
+    pdf_bytes = await build_pdf_book_html(child_name, story_theme, generated_book_data, appearance_prompt)
     
     if pdf_bytes:
         document = BufferedInputFile(pdf_bytes, filename=f"Сказка_{child_name}.pdf")
@@ -139,7 +199,7 @@ async def generate_full_book(name: str, theme: str):
         Ответь СТРОГО в формате JSON-массива из 10 объектов без лишнего текста.
         Каждый объект должен содержать:
         - "text": текст страницы (2-4 предложения).
-        - "prompt": описание сцены на английском языке (например: "human child standing near a cute magical creature").
+        - "prompt": описание сцены на английском языке (например: "exploring a glowing magical forest with dinosaurs").
         """
         response = await client.chat.completions.create(
             model="gpt-4o-mini",
@@ -153,14 +213,14 @@ async def generate_full_book(name: str, theme: str):
     except Exception as e:
         print(f"Ошибка книги OpenAI: {e}")
         fallback = [{"text": f"Страница {i}: {name} продолжал свое приключение по сюжету '{theme}'!", 
-                     "prompt": "a human child in a fairytale adventure, 3d pixar style"} for i in range(1, 11)]
+                     "prompt": "exploring a fairytale world, 3d pixar style"} for i in range(1, 11)]
         return fallback, str(e)
 
-def _run_replicate_flux_and_swap(face_url: str, prompt: str, name: str):
-    full_prompt = f"3D Pixar style animation screenshot, a cute human child boy protagonist named {name}, human body with normal clothes, no tail, {prompt}, bright sunny magical lighting, sharp clear focus, 8k render"
+def _run_flux(prompt: str, name: str, appearance: str):
+    # Жесткий промпт с исключениями мутаций и хвостов
+    full_prompt = f"3D Pixar style animation, {appearance}, {prompt}, cheerful atmosphere, bright sunny magical lighting, clear sharp focus, highly detailed 8k render, masterpiece"
     
-    # 1. Генерация качественного кадра
-    base_image = replicate.run(
+    output = replicate.run(
         "black-forest-labs/flux-schnell",
         input={
             "prompt": full_prompt,
@@ -168,55 +228,27 @@ def _run_replicate_flux_and_swap(face_url: str, prompt: str, name: str):
             "aspect_ratio": "1:1"
         }
     )
-    base_url = str(base_image[0] if isinstance(base_image, list) else base_image)
+    res = output[0] if isinstance(output, list) else output
+    return str(res)
 
-    # 2. Попытка замены лица на оригинальное
-    try:
-        swapped_image = replicate.run(
-            "lucataco/faceswap:9a429854842207b8f5c16b22f082e0e4178a5712f86237dd1d51a6be12cf73d2",
-            input={
-                "target_image": base_url,
-                "source_image": face_url
-            }
-        )
-        return str(swapped_image[0] if isinstance(swapped_image, list) else swapped_image)
-    except Exception as swap_err:
-        print(f"FaceSwap failed, using base Flux image: {swap_err}")
-        return base_url
-
-async def generate_image_safe(face_url: str, prompt: str, name: str) -> str:
-    # Попытка 1: Полноценный запуск через Replicate + FaceSwap
+async def generate_image_flux(prompt: str, name: str, appearance: str) -> str:
     for attempt in range(1, 3):
         try:
             res_url = await asyncio.wait_for(
-                asyncio.to_thread(_run_replicate_flux_and_swap, face_url, prompt, name),
-                timeout=60.0
+                asyncio.to_thread(_run_flux, prompt, name, appearance),
+                timeout=30.0
             )
             if res_url:
                 return res_url
         except Exception as e:
-            print(f"Attempt {attempt} failed for prompt '{prompt}': {e}")
+            print(f"Flux Attempt {attempt} failed: {e}")
             await asyncio.sleep(1)
 
-    # Попытка 2: Только базовый быстрый Flux (гарантирует картинку)
-    try:
-        def _run_flux_only():
-            full_prompt = f"3D Pixar style character illustration, cute young boy named {name}, {prompt}, bright sunny lighting, sharp focus, 8k"
-            output = replicate.run(
-                "black-forest-labs/flux-schnell",
-                input={"prompt": full_prompt, "num_inference_steps": 4, "aspect_ratio": "1:1"}
-            )
-            return str(output[0] if isinstance(output, list) else output)
+    return None
 
-        return await asyncio.to_thread(_run_flux_only)
-    except Exception as flux_err:
-        print(f"Flux fallback error: {flux_err}")
-        return None
-
-async def build_pdf_book_html(name: str, theme: str, book_data: list, face_url: str):
+async def build_pdf_book_html(name: str, theme: str, book_data: list, appearance: str):
     try:
-        # Генерируем отдельную обложку или берем картинку с 1-й страницы
-        cover_bg = await generate_image_safe(face_url, f"magical cover art for children book about {theme}", name)
+        cover_bg = await generate_image_flux(f"magical cover art for children book about {theme}", name, appearance)
         if not cover_bg and len(book_data) > 0:
             cover_bg = book_data[0].get("image_url")
 
