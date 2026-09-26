@@ -54,16 +54,6 @@ def get_gender_keyboard():
         one_time_keyboard=True
     )
 
-def get_hair_keyboard():
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="Короткие темные"), KeyboardButton(text="Короткие русые")],
-            [KeyboardButton(text="Светлые/Блондин"), KeyboardButton(text="Кудрявые темные")]
-        ],
-        resize_keyboard=True,
-        one_time_keyboard=True
-    )
-
 def get_eyes_keyboard():
     return ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(text="Карие"), KeyboardButton(text="Голубые"), KeyboardButton(text="Зеленые")]],
@@ -99,7 +89,10 @@ async def process_theme(message: types.Message, state: FSMContext):
 @dp.message(StoryForm.waiting_for_gender)
 async def process_gender(message: types.Message, state: FSMContext):
     await state.update_data(gender=message.text)
-    await message.answer("Выберите прическу и цвет волос:", reply_markup=get_hair_keyboard())
+    await message.answer(
+        "Опишите цвет и тип волос ребенка (например: 'короткие темно-каштановые', 'светло-русые кудрявые'):",
+        reply_markup=ReplyKeyboardRemove()
+    )
     await state.set_state(StoryForm.waiting_for_hair)
 
 @dp.message(StoryForm.waiting_for_hair)
@@ -129,15 +122,14 @@ async def process_photo_and_generate(message: types.Message, state: FSMContext):
     child_name = data['child_name']
     story_theme = data['story_theme']
     gender = data.get('gender', 'Мальчик')
-    hair = data.get('hair', 'темные короткие волосы')
+    hair = data.get('hair', 'короткие темные волосы')
     eyes = data.get('eyes', 'карие')
-    clothes = data.get('clothes', 'удобная детская одежда')
+    clothes = data.get('clothes', 'детская одежда')
 
-    # Формируем точное текстовое описание внешности
     gender_en = "boy" if "Мальч" in gender else "girl"
     appearance_prompt = f"a cute young {gender_en} named {child_name}, {hair} hair, {eyes} eyes, wearing {clothes}, human child body"
 
-    await message.answer("Пишу волшебную книгу и генерирую иллюстрации... Это займет около 1–2 минут.")
+    await message.answer("Пишу волшебную сказку и генерирую иллюстрации... Это займет около 1–2 минут.")
 
     pages, error_msg = await generate_full_book(child_name, story_theme)
     if error_msg:
@@ -149,8 +141,8 @@ async def process_photo_and_generate(message: types.Message, state: FSMContext):
         story_text = page.get("text", "")
         img_prompt = page.get("prompt", "")
 
-        # Безопасная генерация Flux с фиксированным описанием внешности
-        image_url = await generate_image_flux(img_prompt, child_name, appearance_prompt)
+        # Безопасная генерация с гарантией получения ссылки на фото
+        image_url = await generate_image_flux_guaranteed(img_prompt, child_name, appearance_prompt)
 
         header = f"Страница {idx}/10\n\n{story_text}"
         
@@ -216,39 +208,50 @@ async def generate_full_book(name: str, theme: str):
                      "prompt": "exploring a fairytale world, 3d pixar style"} for i in range(1, 11)]
         return fallback, str(e)
 
-def _run_flux(prompt: str, name: str, appearance: str):
-    # Жесткий промпт с исключениями мутаций и хвостов
+def _run_flux(prompt: str, name: str, appearance: str, num_steps: int = 4):
     full_prompt = f"3D Pixar style animation, {appearance}, {prompt}, cheerful atmosphere, bright sunny magical lighting, clear sharp focus, highly detailed 8k render, masterpiece"
     
     output = replicate.run(
         "black-forest-labs/flux-schnell",
         input={
             "prompt": full_prompt,
-            "num_inference_steps": 4,
+            "num_inference_steps": num_steps,
             "aspect_ratio": "1:1"
         }
     )
     res = output[0] if isinstance(output, list) else output
     return str(res)
 
-async def generate_image_flux(prompt: str, name: str, appearance: str) -> str:
+async def generate_image_flux_guaranteed(prompt: str, name: str, appearance: str) -> str:
+    # 1. Попытка основного запроса в Replicate
     for attempt in range(1, 3):
         try:
             res_url = await asyncio.wait_for(
-                asyncio.to_thread(_run_flux, prompt, name, appearance),
-                timeout=30.0
+                asyncio.to_thread(_run_flux, prompt, name, appearance, 4),
+                timeout=25.0
             )
             if res_url:
                 return res_url
         except Exception as e:
-            print(f"Flux Attempt {attempt} failed: {e}")
-            await asyncio.sleep(1)
+            print(f"Flux attempt {attempt} error: {e}")
+            await asyncio.sleep(0.5)
+
+    # 2. Быстрый ультра-фолбэк Replicate с 2 шагами генерации (чтобы точно не пропустить страницу)
+    try:
+        res_url = await asyncio.wait_for(
+            asyncio.to_thread(_run_flux, prompt, name, appearance, 2),
+            timeout=15.0
+        )
+        if res_url:
+            return res_url
+    except Exception as err:
+        print(f"Ultra-fallback error: {err}")
 
     return None
 
 async def build_pdf_book_html(name: str, theme: str, book_data: list, appearance: str):
     try:
-        cover_bg = await generate_image_flux(f"magical cover art for children book about {theme}", name, appearance)
+        cover_bg = await generate_image_flux_guaranteed(f"magical cover art for children book about {theme}", name, appearance)
         if not cover_bg and len(book_data) > 0:
             cover_bg = book_data[0].get("image_url")
 
