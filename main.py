@@ -581,21 +581,33 @@ async def keep_alive():
 async def main():
     logging.basicConfig(level=logging.INFO)
     
+    # 1. Запуск веб-сервера и пинга
     await start_web_server()
     asyncio.create_task(keep_alive())
 
+    # 2. Небольшая задержка перед захватом поллинга (защита от конфликта при перезапуске Render)
+    await asyncio.sleep(3)
+
+    # 3. Сброс вебхука и удаление зависших апдейтов
     try:
         await bot.delete_webhook(drop_pending_updates=True)
         print("Webhook successfully deleted")
     except Exception as e:
         print(f"Error deleting webhook: {e}")
 
+    # 4. Установка команд
     await bot.set_my_commands([
         BotCommand(command="start", description="Начать сначала / Новая сказка"),
         BotCommand(command="my_books", description="Мои книги / Собрать PDF")
     ])
 
-    await dp.start_polling(bot)
+    # 5. Запуск поллинга с обработкой конфликтов
+    while True:
+        try:
+            await dp.start_polling(bot, skip_updates=True)
+        except Exception as e:
+            logging.error(f"Polling conflict error: {e}")
+            await asyncio.sleep(5)  # Ждем 5 секунд при конфликте процессов
 
 if __name__ == "__main__":
     asyncio.run(main())
