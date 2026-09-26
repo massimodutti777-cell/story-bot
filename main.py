@@ -3,7 +3,6 @@ import logging
 import os
 import json
 import io
-import random
 import urllib.parse
 import aiohttp
 from aiohttp import web
@@ -177,7 +176,7 @@ async def process_gender(message: types.Message, state: FSMContext):
 @dp.message(StoryForm.waiting_for_age)
 async def process_age(message: types.Message, state: FSMContext):
     await state.update_data(age=message.text)
-    await message.answer("Опишите цвет и тип волос ребенка (например: 'короткие медные рыжие', 'темные кудрявые'):")
+    await message.answer("Опишите цвет и тип волос ребенка (например: 'ярко-рыжие короткие волос', 'темно-каштановые кудрявые'):")
     await state.set_state(StoryForm.waiting_for_hair)
 
 @dp.message(StoryForm.waiting_for_hair)
@@ -220,18 +219,22 @@ async def process_photo_and_generate(message: types.Message, state: FSMContext):
     story_language = data.get('story_language', '🇷🇺 Русский')
     gender = data.get('gender', 'Мальчик')
     age = data.get('age', '2 года')
-    hair_ru = data.get('hair', 'короткие волосы')
+    hair_ru = data.get('hair', 'рыжие волосы')
     eyes_ru = data.get('eyes', 'карие')
     clothes_ru = data.get('clothes', 'детская одежда')
     companion_ru = data.get('companion', '')
     art_style_ru = data.get('art_style', '3D Pixar')
 
-    character_seed = random.randint(10000, 999999)
+    photo_url = None
+    if message.photo:
+        photo = message.photo[-1]
+        file_info = await bot.get_file(photo.file_id)
+        photo_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_info.file_path}"
 
-    await message.answer("Фиксирую внешний вид персонажа и создаю сказку... Это займет около 2–3 минут.")
+    await message.answer("Анализирую параметры внешности и сочиняю сказку... Это займет около 2–3 минут.")
 
-    appearance_en, style_prompt_en = await translate_appearance_and_style(
-        gender, age, hair_ru, eyes_ru, clothes_ru, companion_ru, art_style_ru, child_name
+    appearance_en, style_prompt_en = await analyze_photo_and_translate(
+        photo_url, gender, age, hair_ru, eyes_ru, clothes_ru, companion_ru, art_style_ru, child_name
     )
 
     pages, error_msg = await generate_full_book(child_name, story_theme, story_language)
@@ -246,11 +249,11 @@ async def process_photo_and_generate(message: types.Message, state: FSMContext):
         has_character = page.get("has_character", True)
 
         if has_character:
-            final_prompt = f"{style_prompt_en}, consistent protagonist character design, {appearance_en}, strictly maintaining exact same facial features, same hairstyle, same outfit in every scene, {scene_prompt}, cheerful fairytale atmosphere, bright sunny magical lighting, 8k render"
+            final_prompt = f"{style_prompt_en}, consistent character design, {appearance_en}, {scene_prompt}, cheerful fairytale lighting, highly detailed 8k render"
         else:
             final_prompt = f"{style_prompt_en} landscape cinematic scene illustration without human character, {scene_prompt}, bright fairytale lighting, highly detailed 8k"
 
-        image_url = await generate_image_flux_guaranteed(final_prompt, seed=character_seed)
+        image_url = await generate_image_flux_guaranteed(final_prompt)
 
         header = f"Страница {idx}/10\n\n{story_text}"
         
@@ -283,7 +286,6 @@ async def process_photo_and_generate(message: types.Message, state: FSMContext):
         "story_theme": story_theme,
         "appearance_en": appearance_en,
         "style_prompt_en": style_prompt_en,
-        "character_seed": character_seed,
         "book_data": generated_book_data
     }
 
@@ -310,11 +312,10 @@ async def process_build_pdf(message: types.Message):
     book_data = book_info["book_data"]
     appearance_en = book_info["appearance_en"]
     style_prompt_en = book_info["style_prompt_en"]
-    character_seed = book_info.get("character_seed", 12345)
 
     await message.answer("Верстаем ваш финальный PDF-файл...")
 
-    pdf_bytes = await build_pdf_book_html(child_name, story_theme, book_data, appearance_en, style_prompt_en, character_seed)
+    pdf_bytes = await build_pdf_book_html(child_name, story_theme, book_data, appearance_en, style_prompt_en)
     
     if pdf_bytes:
         document = BufferedInputFile(pdf_bytes, filename=f"Сказка_{child_name}.pdf")
@@ -336,7 +337,6 @@ async def callback_redraw_page(callback: types.CallbackQuery):
     page_idx = int(callback.data.split("_")[1])
     book_info = USER_BOOKS[user_id]
     book_data = book_info["book_data"]
-    character_seed = book_info.get("character_seed", 12345)
 
     page_item = next((item for item in book_data if item["page"] == page_idx), None)
     if not page_item:
@@ -344,8 +344,8 @@ async def callback_redraw_page(callback: types.CallbackQuery):
         return
 
     await callback.answer(f"Перерисовываем страницу {page_idx}...")
-    new_prompt = f"{page_item['prompt']}, alternative camera angle, fresh background setup"
-    new_image_url = await generate_image_flux_guaranteed(new_prompt, seed=character_seed)
+    new_prompt = f"{page_item['prompt']}, alternative camera shot, fresh unique composition"
+    new_image_url = await generate_image_flux_guaranteed(new_prompt)
 
     if new_image_url:
         page_item["image_url"] = new_image_url
@@ -358,34 +358,53 @@ async def callback_redraw_page(callback: types.CallbackQuery):
         except Exception as e:
             print(f"Edit media failed: {e}")
 
-async def translate_appearance_and_style(gender: str, age: str, hair: str, eyes: str, clothes: str, companion: str, art_style: str, name: str):
+async def analyze_photo_and_translate(photo_url: str, gender: str, age: str, hair: str, eyes: str, clothes: str, companion: str, art_style: str, name: str):
     try:
         client = openai.AsyncOpenAI(api_key=OPENAI_API_KEY)
+        
+        messages = []
+        user_content = []
+
+        if photo_url:
+            user_content.append({
+                "type": "image_url",
+                "image_url": {"url": photo_url}
+            })
+            user_content.append({
+                "type": "text",
+                "text": f"Analyze this child photo carefully. Combine it with these user inputs: Gender: {gender}, Age: {age}, Hair: {hair}, Eyes: {eyes}, Clothes: {clothes}, Companion: {companion}, Style: {art_style}."
+            })
+        else:
+            user_content.append({
+                "type": "text",
+                "text": f"Translate and format child details for Flux image generator. Gender: {gender}, Age: {age}, Hair: {hair}, Eyes: {eyes}, Clothes: {clothes}, Companion: {companion}, Style: {art_style}."
+            })
+
+        user_content.append({
+            "type": "text",
+            "text": f"""
+            CRITICAL RULES FOR FLUX PROMPT:
+            1. STRICT HAIR COLOR: If hair is red/ginger, output '(bright ginger red hair:1.5)'. Never output dark, brown or green hair.
+            2. STRICT EYE COLOR: If eyes are brown, output '(dark brown eyes:1.4)'.
+            3. STRICT AGE: If age <= 3yo, output 'toddler, cute 2yo baby face, chubby cheeks, short toddler body proportions'.
+            4. STRICT OUTFIT: Describe exact clothes items (e.g., 'wearing a red t-shirt and blue pants').
+
+            Format output strictly as JSON with keys 'appearance' and 'style_prompt'.
+            """
+        })
+
         response = await client.chat.completions.create(
             model="gpt-4o-mini",
-            messages=[{
-                "role": "user",
-                "content": f"""
-                Translate and format child details for Stable Diffusion / Flux prompts with STRICT visual consistency.
-                Gender: {gender}, Age: {age}, Hair: {hair}, Eyes: {eyes}, Clothes: {clothes}, Companion: {companion}, Style: {art_style}.
-                
-                AGE RULES:
-                - If age is 1-3 years old: 'toddler, cute baby face, chubby cheeks, short toddler proportions, 2-year-old toddler'.
-                - If age is 4-6 years old: 'cute young child, 5-year-old kid'.
-                - If age is 7+ years old: 'schoolchild, 8-year-old boy/girl'.
-                
-                OUTFIT RULE: Specify exact clothes colors and items clearly (e.g., 'wearing a red t-shirt, blue jeans, white sneakers').
-                
-                Format output strictly as JSON with keys 'appearance' and 'style_prompt'.
-                """
-            }],
+            messages=[{"role": "user", "content": user_content}],
             response_format={"type": "json_object"}
         )
         data = json.loads(response.choices[0].message.content)
         return data.get("appearance", f"a cute toddler named {name}"), data.get("style_prompt", "3D Pixar style")
     except Exception as e:
-        print(f"Translation error: {e}")
-        return f"a cute toddler boy named {name}, chubby cheeks, short hair, toddler proportions, wearing red t-shirt and blue pants", "3D Pixar style animation"
+        print(f"Analysis/Translation error: {e}")
+        hair_en = "bright ginger red hair" if "рыж" in hair.lower() or "red" in hair.lower() else "short hair"
+        eyes_en = "dark brown eyes" if "кар" in eyes.lower() or "brown" in eyes.lower() else "eyes"
+        return f"a cute 2yo toddler boy named {name}, ({hair_en}:1.5), ({eyes_en}:1.4), chubby cheeks, short body proportions, wearing red t-shirt and blue pants", "3D Pixar style animation"
 
 async def generate_full_book(name: str, theme: str, language: str):
     try:
@@ -397,7 +416,7 @@ async def generate_full_book(name: str, theme: str, language: str):
         
         ТРЕБОВАНИЯ К ИЛЛЮСТРАЦИЯМ:
         - На некоторых страницах должен присутствовать главный герой {name}.
-        - На некоторых страницах изображай только окружение/предметы по сюжету.
+        - На некоторых страницах изображай только окружение/предметы по сюжету (НЕ упоминая персонажей в prompt).
         
         Ответь СТРОГО в формате JSON с ключом "pages", содержащим массив из 10 объектов без лишнего текста.
         Каждый объект должен содержать:
@@ -420,28 +439,24 @@ async def generate_full_book(name: str, theme: str, language: str):
                      "prompt": "fairytale world", "has_character": (i % 2 != 0)} for i in range(1, 11)]
         return fallback, str(e)
 
-def _run_flux(full_prompt: str, seed: int = None, num_steps: int = 4):
-    input_params = {
-        "prompt": full_prompt,
-        "num_inference_steps": num_steps,
-        "aspect_ratio": "1:1"
-    }
-    if seed:
-        input_params["seed"] = seed
-
+def _run_flux(full_prompt: str, num_steps: int = 4):
     output = replicate.run(
         "black-forest-labs/flux-schnell",
-        input=input_params
+        input={
+            "prompt": full_prompt,
+            "num_inference_steps": num_steps,
+            "aspect_ratio": "1:1"
+        }
     )
     res = output[0] if isinstance(output, list) else output
     return str(res)
 
-async def generate_image_flux_guaranteed(full_prompt: str, seed: int = None) -> str:
+async def generate_image_flux_guaranteed(full_prompt: str) -> str:
     async with replicate_semaphore:
         for attempt in range(1, 4):
             try:
                 res_url = await asyncio.wait_for(
-                    asyncio.to_thread(_run_flux, full_prompt, seed, 4),
+                    asyncio.to_thread(_run_flux, full_prompt, 4),
                     timeout=50.0
                 )
                 if res_url:
@@ -452,7 +467,7 @@ async def generate_image_flux_guaranteed(full_prompt: str, seed: int = None) -> 
 
         try:
             res_url = await asyncio.wait_for(
-                asyncio.to_thread(_run_flux, full_prompt, seed, 2),
+                asyncio.to_thread(_run_flux, full_prompt, 2),
                 timeout=30.0
             )
             if res_url:
@@ -462,10 +477,10 @@ async def generate_image_flux_guaranteed(full_prompt: str, seed: int = None) -> 
 
         return None
 
-async def build_pdf_book_html(name: str, theme: str, book_data: list, appearance: str, style_prompt: str, seed: int = None):
+async def build_pdf_book_html(name: str, theme: str, book_data: list, appearance: str, style_prompt: str):
     try:
         cover_prompt = f"{style_prompt} magical cover art for children book, {appearance}, exploring {theme}, bright fairytale colors"
-        cover_bg = await generate_image_flux_guaranteed(cover_prompt, seed=seed)
+        cover_bg = await generate_image_flux_guaranteed(cover_prompt)
         if not cover_bg and len(book_data) > 0:
             for item in book_data:
                 if item.get("image_url"):
