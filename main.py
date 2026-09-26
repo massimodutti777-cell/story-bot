@@ -29,6 +29,9 @@ if REPLICATE_API_TOKEN:
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
+# Семафор для предотвращения блокировок Replicate
+replicate_semaphore = asyncio.Semaphore(2)
+
 # FSM Состояния опроса
 class StoryForm(StatesGroup):
     waiting_for_name = State()
@@ -125,9 +128,8 @@ async def process_photo_and_generate(message: types.Message, state: FSMContext):
     eyes_ru = data.get('eyes', 'карие')
     clothes_ru = data.get('clothes', 'детская одежда')
 
-    await message.answer("Перевожу параметры и сочиняю сказку... Это займет около 1–2 минут.")
+    await message.answer("Перевожу параметры и сочиняю сказку... Это займет около 2–3 минут.")
 
-    # Автоматический перевод внешности на английский язык через GPT
     appearance_en = await translate_appearance(gender, hair_ru, eyes_ru, clothes_ru, child_name)
 
     pages, error_msg = await generate_full_book(child_name, story_theme)
@@ -141,12 +143,12 @@ async def process_photo_and_generate(message: types.Message, state: FSMContext):
         scene_prompt = page.get("prompt", "")
         has_character = page.get("has_character", True)
 
-        # Формируем финальный промпт для Replicate
         if has_character:
-            final_prompt = f"3D Pixar style character illustration, {appearance_en}, {scene_prompt}, cheerful atmosphere, bright sunny magical lighting, highly detailed 8k"
+            final_prompt = f"3D Pixar style character illustration, {appearance_en}, {scene_prompt}, cheerful fairytale atmosphere, bright sunny magical lighting, highly detailed 8k"
         else:
-            final_prompt = f"3D Pixar style landscape cinematic scene illustration without human, {scene_prompt}, bright fairytale lighting, highly detailed 8k"
+            final_prompt = f"3D Pixar style landscape cinematic scene illustration without human character, {scene_prompt}, bright fairytale lighting, highly detailed 8k"
 
+        # Надежная генерация с контролем очереди
         image_url = await generate_image_flux_guaranteed(final_prompt)
 
         header = f"Страница {idx}/10\n\n{story_text}"
@@ -166,7 +168,7 @@ async def process_photo_and_generate(message: types.Message, state: FSMContext):
             "image_url": image_url
         })
         
-        await asyncio.sleep(0.3)
+        await asyncio.sleep(1.5)
 
     await message.answer("Верстаем вашу красочную PDF-книгу...")
 
@@ -185,7 +187,6 @@ async def process_photo_and_generate(message: types.Message, state: FSMContext):
     await state.clear()
 
 async def translate_appearance(gender: str, hair: str, eyes: str, clothes: str, name: str) -> str:
-    """Переводит ручной ввод пользователя на английский язык для промпта"""
     try:
         client = openai.AsyncOpenAI(api_key=OPENAI_API_KEY)
         response = await client.chat.completions.create(
@@ -247,38 +248,41 @@ def _run_flux(full_prompt: str, num_steps: int = 4):
     return str(res)
 
 async def generate_image_flux_guaranteed(full_prompt: str) -> str:
-    # 1. Попытка основного запроса Flux в Replicate (до 35 сек)
-    for attempt in range(1, 3):
+    async with replicate_semaphore:
+        for attempt in range(1, 4):
+            try:
+                res_url = await asyncio.wait_for(
+                    asyncio.to_thread(_run_flux, full_prompt, 4),
+                    timeout=50.0
+                )
+                if res_url:
+                    return res_url
+            except Exception as e:
+                print(f"Flux attempt {attempt} error: {e}")
+                await asyncio.sleep(2.0 * attempt)
+
+        # Резервный вызов с уменьшенным количеством шагов
         try:
             res_url = await asyncio.wait_for(
-                asyncio.to_thread(_run_flux, full_prompt, 4),
-                timeout=35.0
+                asyncio.to_thread(_run_flux, full_prompt, 2),
+                timeout=30.0
             )
             if res_url:
                 return res_url
-        except Exception as e:
-            print(f"Flux attempt {attempt} error: {e}")
-            await asyncio.sleep(0.5)
+        except Exception as err:
+            print(f"Ultra-fallback error: {err}")
 
-    # 2. Быстрый фолбэк с 2 шагами (гарантия получения картинки без пропусков)
-    try:
-        res_url = await asyncio.wait_for(
-            asyncio.to_thread(_run_flux, full_prompt, 2),
-            timeout=15.0
-        )
-        if res_url:
-            return res_url
-    except Exception as err:
-        print(f"Ultra-fallback error: {err}")
-
-    return None
+        return None
 
 async def build_pdf_book_html(name: str, theme: str, book_data: list, appearance: str):
     try:
         cover_prompt = f"3D Pixar style magical cover art for children book, {appearance}, exploring {theme}, bright fairytale colors"
         cover_bg = await generate_image_flux_guaranteed(cover_prompt)
         if not cover_bg and len(book_data) > 0:
-            cover_bg = book_data[0].get("image_url")
+            for item in book_data:
+                if item.get("image_url"):
+                    cover_bg = item.get("image_url")
+                    break
 
         cover_bg_style = f"background-image: url('{cover_bg}'); background-size: cover; background-position: center;" if cover_bg else "background: linear-gradient(135deg, #2b1055 0%, #7597de 100%);"
 
@@ -447,4 +451,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
