@@ -176,7 +176,7 @@ async def process_gender(message: types.Message, state: FSMContext):
 @dp.message(StoryForm.waiting_for_age)
 async def process_age(message: types.Message, state: FSMContext):
     await state.update_data(age=message.text)
-    await message.answer("Опишите цвет и тип волос ребенка (например: 'ярко-рыжие короткие волос', 'темно-каштановые кудрявые'):")
+    await message.answer("Опишите цвет и тип волос ребенка (например: 'ярко-рыжие короткие волосы', 'темно-каштановые кудрявые'):")
     await state.set_state(StoryForm.waiting_for_hair)
 
 @dp.message(StoryForm.waiting_for_hair)
@@ -249,7 +249,7 @@ async def process_photo_and_generate(message: types.Message, state: FSMContext):
         has_character = page.get("has_character", True)
 
         if has_character:
-            final_prompt = f"{style_prompt_en}, consistent character design, {appearance_en}, {scene_prompt}, cheerful fairytale lighting, highly detailed 8k render"
+            final_prompt = f"{style_prompt_en}, single main protagonist ({appearance_en}), {scene_prompt}, cheerful fairytale lighting, highly detailed 8k render, no clone, no identical twins, distinct different friends with different hair colors and different clothes"
         else:
             final_prompt = f"{style_prompt_en} landscape cinematic scene illustration without human character, {scene_prompt}, bright fairytale lighting, highly detailed 8k"
 
@@ -344,7 +344,7 @@ async def callback_redraw_page(callback: types.CallbackQuery):
         return
 
     await callback.answer(f"Перерисовываем страницу {page_idx}...")
-    new_prompt = f"{page_item['prompt']}, alternative camera shot, fresh unique composition"
+    new_prompt = f"{page_item['prompt']}, alternative camera shot, fresh unique composition, no clones"
     new_image_url = await generate_image_flux_guaranteed(new_prompt)
 
     if new_image_url:
@@ -362,7 +362,6 @@ async def analyze_photo_and_translate(photo_url: str, gender: str, age: str, hai
     try:
         client = openai.AsyncOpenAI(api_key=OPENAI_API_KEY)
         
-        messages = []
         user_content = []
 
         if photo_url:
@@ -414,14 +413,15 @@ async def generate_full_book(name: str, theme: str, language: str):
         Сюжет сказки: {theme}.
         Язык текста сказки: {language}.
         
-        ТРЕБОВАНИЯ К ИЛЛЮСТРАЦИЯМ:
-        - На некоторых страницах должен присутствовать главный герой {name}.
+        СТРОГИЕ ПРАВИЛА ДЛЯ ОПИСАНИЯ СЦЕН ("prompt"):
+        - Главный герой {name} - ТОЛЬКО ОДИН. Если на странице описываются его друзья, ОПИСЫВАЙ ИХ ВНЕШНОСТЬ ОТДЕЛЬНО И ОТЛИЧНО ОТ ГЛАВНОГО ГЕРОЯ (например: "a blonde girl in a yellow dress and a dark-haired boy in a green shirt standing next to the protagonist").
+        - НИКОГДА не пиши просто "with his friends" или "with other kids" без описания их отличной внешности, иначе нейросеть склонирует героя!
         - На некоторых страницах изображай только окружение/предметы по сюжету (НЕ упоминая персонажей в prompt).
         
         Ответь СТРОГО в формате JSON с ключом "pages", содержащим массив из 10 объектов без лишнего текста.
         Каждый объект должен содержать:
         - "text": текст страницы на языке {language} (2-4 предложения).
-        - "prompt": описание сцены на английском языке для генератора картинок.
+        - "prompt": детальное описание сцены на английском языке для генератора картинок.
         - "has_character": boolean.
         """
         response = await client.chat.completions.create(
