@@ -3,6 +3,7 @@ import logging
 import os
 import json
 import io
+import random
 import urllib.parse
 import aiohttp
 from aiohttp import web
@@ -41,6 +42,7 @@ USER_BOOKS = {}
 # FSM Состояния опроса
 class StoryForm(StatesGroup):
     waiting_for_name = State()
+    waiting_for_language = State()
     waiting_for_style = State()
     waiting_for_theme = State()
     waiting_for_gender = State()
@@ -59,6 +61,16 @@ def get_action_keyboard():
             [KeyboardButton(text="Создать новую сказку")]
         ],
         resize_keyboard=True
+    )
+
+def get_language_keyboard():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="🇷🇺 Русский"), KeyboardButton(text="🇰🇿 Қазақша")],
+            [KeyboardButton(text="🇬🇧 English"), KeyboardButton(text="🇪🇸 Español")]
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=True
     )
 
 def get_style_keyboard():
@@ -115,11 +127,20 @@ async def cmd_my_books(message: types.Message):
             reply_markup=get_action_keyboard()
         )
         return
-    await message.answer("У вас пока нет активных или сохраненных книг. Нажмите 'Создать новую сказку'!", reply_markup=get_action_keyboard())
+    await message.answer("У вас пока нет активных книг. Нажмите 'Создать новую сказку'!", reply_markup=get_action_keyboard())
 
 @dp.message(StoryForm.waiting_for_name)
 async def process_name(message: types.Message, state: FSMContext):
     await state.update_data(child_name=message.text.strip())
+    await message.answer(
+        "Выберите язык, на котором будет написана сказка:",
+        reply_markup=get_language_keyboard()
+    )
+    await state.set_state(StoryForm.waiting_for_language)
+
+@dp.message(StoryForm.waiting_for_language)
+async def process_language(message: types.Message, state: FSMContext):
+    await state.update_data(story_language=message.text.strip())
     await message.answer(
         "Выберите визуальный стиль иллюстраций для вашей книги:",
         reply_markup=get_style_keyboard()
@@ -148,7 +169,7 @@ async def process_theme(message: types.Message, state: FSMContext):
 async def process_gender(message: types.Message, state: FSMContext):
     await state.update_data(gender=message.text)
     await message.answer(
-        "Укажите возраст ребенка (например: '4 года', '6 лет'):",
+        "Укажите возраст ребенка (например: '2 года', '4 года', '7 лет'):",
         reply_markup=ReplyKeyboardRemove()
     )
     await state.set_state(StoryForm.waiting_for_age)
@@ -178,7 +199,7 @@ async def process_eyes(message: types.Message, state: FSMContext):
 async def process_clothes(message: types.Message, state: FSMContext):
     await state.update_data(clothes=message.text)
     await message.answer(
-        "Есть ли у героя спутник или питомец? (Напишите, например: 'собака корги', 'маленький зеленый дракон' или напишите 'нет'):"
+        "Есть ли у героя спутник или питомец? (Напишите, например: 'собака корги', 'зеленый дракончик' или напишите 'нет'):"
     )
     await state.set_state(StoryForm.waiting_for_companion)
 
@@ -196,21 +217,24 @@ async def process_photo_and_generate(message: types.Message, state: FSMContext):
     data = await state.get_data()
     child_name = data['child_name']
     story_theme = data['story_theme']
+    story_language = data.get('story_language', '🇷🇺 Русский')
     gender = data.get('gender', 'Мальчик')
-    age = data.get('age', '5 лет')
+    age = data.get('age', '2 года')
     hair_ru = data.get('hair', 'короткие волосы')
     eyes_ru = data.get('eyes', 'карие')
     clothes_ru = data.get('clothes', 'детская одежда')
     companion_ru = data.get('companion', '')
     art_style_ru = data.get('art_style', '3D Pixar')
 
-    await message.answer("Перевожу параметры, создаю иллюстрации и сочиняю сказку... Это займет около 2–3 минут.")
+    character_seed = random.randint(10000, 999999)
+
+    await message.answer("Фиксирую внешний вид персонажа и создаю сказку... Это займет около 2–3 минут.")
 
     appearance_en, style_prompt_en = await translate_appearance_and_style(
         gender, age, hair_ru, eyes_ru, clothes_ru, companion_ru, art_style_ru, child_name
     )
 
-    pages, error_msg = await generate_full_book(child_name, story_theme)
+    pages, error_msg = await generate_full_book(child_name, story_theme, story_language)
     if error_msg:
         await message.answer(f"Ошибка OpenAI:\n`{error_msg}`", parse_mode="Markdown")
 
@@ -222,11 +246,11 @@ async def process_photo_and_generate(message: types.Message, state: FSMContext):
         has_character = page.get("has_character", True)
 
         if has_character:
-            final_prompt = f"{style_prompt_en}, {appearance_en}, {scene_prompt}, cheerful fairytale atmosphere, bright sunny magical lighting, highly detailed 8k"
+            final_prompt = f"{style_prompt_en}, consistent protagonist character design, {appearance_en}, strictly maintaining exact same facial features, same hairstyle, same outfit in every scene, {scene_prompt}, cheerful fairytale atmosphere, bright sunny magical lighting, 8k render"
         else:
             final_prompt = f"{style_prompt_en} landscape cinematic scene illustration without human character, {scene_prompt}, bright fairytale lighting, highly detailed 8k"
 
-        image_url = await generate_image_flux_guaranteed(final_prompt)
+        image_url = await generate_image_flux_guaranteed(final_prompt, seed=character_seed)
 
         header = f"Страница {idx}/10\n\n{story_text}"
         
@@ -254,26 +278,25 @@ async def process_photo_and_generate(message: types.Message, state: FSMContext):
         
         await asyncio.sleep(1.2)
 
-    # Сохраняем состояние книги пользователя без генерации PDF
     USER_BOOKS[message.from_user.id] = {
         "child_name": child_name,
         "story_theme": story_theme,
         "appearance_en": appearance_en,
         "style_prompt_en": style_prompt_en,
+        "character_seed": character_seed,
         "book_data": generated_book_data
     }
 
     await message.answer(
-        "✨ Все 10 страниц созданы!\n\n"
-        "Вы можете просмотреть иллюстрации выше. Если какая-то картинка вам не понравилась, нажмите кнопку **«🔄 Перерисовать страницу»** под ней.\n\n"
-        "Когда всё будет идеально, нажмите кнопку ниже **«📄 Собрать PDF-книгу»**, чтобы получить финальный документ!",
+        "✨ Все 10 страниц готовы!\n\n"
+        "Вы можете оценить иллюстрации. Если картинка не понравилась, нажмите **«🔄 Перерисовать страницу»** под ней.\n\n"
+        "Нажмите **«📄 Собрать PDF-книгу»**, чтобы получить финальную подборку!",
         parse_mode="Markdown",
         reply_markup=get_action_keyboard()
     )
 
     await state.clear()
 
-# Ручное создание PDF по кнопке
 @dp.message(F.text == "📄 Собрать PDF-книгу")
 async def process_build_pdf(message: types.Message):
     user_id = message.from_user.id
@@ -287,32 +310,33 @@ async def process_build_pdf(message: types.Message):
     book_data = book_info["book_data"]
     appearance_en = book_info["appearance_en"]
     style_prompt_en = book_info["style_prompt_en"]
+    character_seed = book_info.get("character_seed", 12345)
 
-    await message.answer("Верстаем ваш финальный PDF-файл со всеми обновленными картинками...")
+    await message.answer("Верстаем ваш финальный PDF-файл...")
 
-    pdf_bytes = await build_pdf_book_html(child_name, story_theme, book_data, appearance_en, style_prompt_en)
+    pdf_bytes = await build_pdf_book_html(child_name, story_theme, book_data, appearance_en, style_prompt_en, character_seed)
     
     if pdf_bytes:
         document = BufferedInputFile(pdf_bytes, filename=f"Сказка_{child_name}.pdf")
         await message.answer_document(
             document=document, 
-            caption=f"Ваша идеальная иллюстрированная книга про {child_name} готова!",
+            caption=f"Ваша иллюстрированная книга про {child_name} готова!",
             reply_markup=get_action_keyboard()
         )
     else:
         await message.answer("Не удалось собрать PDF, но вы можете прочитать сказку выше!", reply_markup=get_action_keyboard())
 
-# Обработка нажатия кнопки "Перерисовать страницу"
 @dp.callback_query(F.data.startswith("redraw_"))
 async def callback_redraw_page(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     if user_id not in USER_BOOKS or not USER_BOOKS[user_id]:
-        await callback.answer("Данные книги не найдены, создайте новую сказку.")
+        await callback.answer("Данные книги не найдены.")
         return
 
     page_idx = int(callback.data.split("_")[1])
     book_info = USER_BOOKS[user_id]
     book_data = book_info["book_data"]
+    character_seed = book_info.get("character_seed", 12345)
 
     page_item = next((item for item in book_data if item["page"] == page_idx), None)
     if not page_item:
@@ -320,8 +344,8 @@ async def callback_redraw_page(callback: types.CallbackQuery):
         return
 
     await callback.answer(f"Перерисовываем страницу {page_idx}...")
-    new_prompt = f"{page_item['prompt']}, alternative variation, unique camera angle"
-    new_image_url = await generate_image_flux_guaranteed(new_prompt)
+    new_prompt = f"{page_item['prompt']}, alternative camera angle, fresh background setup"
+    new_image_url = await generate_image_flux_guaranteed(new_prompt, seed=character_seed)
 
     if new_image_url:
         page_item["image_url"] = new_image_url
@@ -341,31 +365,44 @@ async def translate_appearance_and_style(gender: str, age: str, hair: str, eyes:
             model="gpt-4o-mini",
             messages=[{
                 "role": "user",
-                "content": f"Translate these details to English prompts. Gender: {gender}, Age: {age}, Hair: {hair}, Eyes: {eyes}, Clothes: {clothes}, Companion: {companion}, Style: {art_style}.\nFormat output strictly as JSON with keys 'appearance' and 'style_prompt'."
+                "content": f"""
+                Translate and format child details for Stable Diffusion / Flux prompts with STRICT visual consistency.
+                Gender: {gender}, Age: {age}, Hair: {hair}, Eyes: {eyes}, Clothes: {clothes}, Companion: {companion}, Style: {art_style}.
+                
+                AGE RULES:
+                - If age is 1-3 years old: 'toddler, cute baby face, chubby cheeks, short toddler proportions, 2-year-old toddler'.
+                - If age is 4-6 years old: 'cute young child, 5-year-old kid'.
+                - If age is 7+ years old: 'schoolchild, 8-year-old boy/girl'.
+                
+                OUTFIT RULE: Specify exact clothes colors and items clearly (e.g., 'wearing a red t-shirt, blue jeans, white sneakers').
+                
+                Format output strictly as JSON with keys 'appearance' and 'style_prompt'.
+                """
             }],
             response_format={"type": "json_object"}
         )
         data = json.loads(response.choices[0].message.content)
-        return data.get("appearance", f"a cute young {name}"), data.get("style_prompt", "3D Pixar style")
+        return data.get("appearance", f"a cute toddler named {name}"), data.get("style_prompt", "3D Pixar style")
     except Exception as e:
         print(f"Translation error: {e}")
-        return f"a cute young {name}, {hair} hair, {eyes} eyes, {clothes}", "3D Pixar style animation"
+        return f"a cute toddler boy named {name}, chubby cheeks, short hair, toddler proportions, wearing red t-shirt and blue pants", "3D Pixar style animation"
 
-async def generate_full_book(name: str, theme: str):
+async def generate_full_book(name: str, theme: str, language: str):
     try:
         client = openai.AsyncOpenAI(api_key=OPENAI_API_KEY)
         prompt = f"""
-        Создай детскую сказку из 10 страниц про ребенка по имени {name}.
+        Напиши детскую сказку из 10 страниц про ребенка по имени {name}.
         Сюжет сказки: {theme}.
+        Язык текста сказки: {language}.
         
         ТРЕБОВАНИЯ К ИЛЛЮСТРАЦИЯМ:
-        - На некоторых страницах должен присутствовать герой.
+        - На некоторых страницах должен присутствовать главный герой {name}.
         - На некоторых страницах изображай только окружение/предметы по сюжету.
         
         Ответь СТРОГО в формате JSON с ключом "pages", содержащим массив из 10 объектов без лишнего текста.
         Каждый объект должен содержать:
-        - "text": текст страницы (2-4 предложения).
-        - "prompt": описание сцены на английском языке.
+        - "text": текст страницы на языке {language} (2-4 предложения).
+        - "prompt": описание сцены на английском языке для генератора картинок.
         - "has_character": boolean.
         """
         response = await client.chat.completions.create(
@@ -383,24 +420,28 @@ async def generate_full_book(name: str, theme: str):
                      "prompt": "fairytale world", "has_character": (i % 2 != 0)} for i in range(1, 11)]
         return fallback, str(e)
 
-def _run_flux(full_prompt: str, num_steps: int = 4):
+def _run_flux(full_prompt: str, seed: int = None, num_steps: int = 4):
+    input_params = {
+        "prompt": full_prompt,
+        "num_inference_steps": num_steps,
+        "aspect_ratio": "1:1"
+    }
+    if seed:
+        input_params["seed"] = seed
+
     output = replicate.run(
         "black-forest-labs/flux-schnell",
-        input={
-            "prompt": full_prompt,
-            "num_inference_steps": num_steps,
-            "aspect_ratio": "1:1"
-        }
+        input=input_params
     )
     res = output[0] if isinstance(output, list) else output
     return str(res)
 
-async def generate_image_flux_guaranteed(full_prompt: str) -> str:
+async def generate_image_flux_guaranteed(full_prompt: str, seed: int = None) -> str:
     async with replicate_semaphore:
         for attempt in range(1, 4):
             try:
                 res_url = await asyncio.wait_for(
-                    asyncio.to_thread(_run_flux, full_prompt, 4),
+                    asyncio.to_thread(_run_flux, full_prompt, seed, 4),
                     timeout=50.0
                 )
                 if res_url:
@@ -411,7 +452,7 @@ async def generate_image_flux_guaranteed(full_prompt: str) -> str:
 
         try:
             res_url = await asyncio.wait_for(
-                asyncio.to_thread(_run_flux, full_prompt, 2),
+                asyncio.to_thread(_run_flux, full_prompt, seed, 2),
                 timeout=30.0
             )
             if res_url:
@@ -421,10 +462,10 @@ async def generate_image_flux_guaranteed(full_prompt: str) -> str:
 
         return None
 
-async def build_pdf_book_html(name: str, theme: str, book_data: list, appearance: str, style_prompt: str):
+async def build_pdf_book_html(name: str, theme: str, book_data: list, appearance: str, style_prompt: str, seed: int = None):
     try:
         cover_prompt = f"{style_prompt} magical cover art for children book, {appearance}, exploring {theme}, bright fairytale colors"
-        cover_bg = await generate_image_flux_guaranteed(cover_prompt)
+        cover_bg = await generate_image_flux_guaranteed(cover_prompt, seed=seed)
         if not cover_bg and len(book_data) > 0:
             for item in book_data:
                 if item.get("image_url"):
@@ -581,33 +622,28 @@ async def keep_alive():
 async def main():
     logging.basicConfig(level=logging.INFO)
     
-    # 1. Запуск веб-сервера и пинга
     await start_web_server()
     asyncio.create_task(keep_alive())
 
-    # 2. Небольшая задержка перед захватом поллинга (защита от конфликта при перезапуске Render)
     await asyncio.sleep(3)
 
-    # 3. Сброс вебхука и удаление зависших апдейтов
     try:
         await bot.delete_webhook(drop_pending_updates=True)
         print("Webhook successfully deleted")
     except Exception as e:
         print(f"Error deleting webhook: {e}")
 
-    # 4. Установка команд
     await bot.set_my_commands([
         BotCommand(command="start", description="Начать сначала / Новая сказка"),
         BotCommand(command="my_books", description="Мои книги / Собрать PDF")
     ])
 
-    # 5. Запуск поллинга с обработкой конфликтов
     while True:
         try:
             await dp.start_polling(bot, skip_updates=True)
         except Exception as e:
             logging.error(f"Polling conflict error: {e}")
-            await asyncio.sleep(5)  # Ждем 5 секунд при конфликте процессов
+            await asyncio.sleep(5)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(mai
